@@ -1,0 +1,30 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!--
+      CS1668: the compiler reports stale entries in the machine's LIB environment variable
+      (e.g. an uninstalled IBM MQ). That is a developer-machine condition, not a defect in this
+      code, and must not break the build for everyone.
+    -->
+    <NoWarn>$(NoWarn);CS1668</NoWarn>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!--
+    Constitution Principle IV: no floating point in any money path.
+    CS0664 / CA1305 style issues around decimal are treated as build breaks above.
+  -->
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

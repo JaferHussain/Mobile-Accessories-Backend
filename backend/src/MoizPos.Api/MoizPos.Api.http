@@ -1,0 +1,6 @@
+@MoizPos.Api_HostAddress = http://localhost:5120
+
+GET {{MoizPos.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

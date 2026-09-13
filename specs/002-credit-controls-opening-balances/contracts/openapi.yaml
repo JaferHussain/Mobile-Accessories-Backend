@@ -1,0 +1,289 @@
+openapi: 3.0.3
+
+info:
+  title: Moiz Mobile POS — Credit Controls & Customer Opening Balances
+  version: "2.0.0"
+  description: |
+    Delta on top of feature 001's contract. Only what this feature changes or adds is described
+    here; conventions (base path, response envelope, auth, money format, error codes) are
+    inherited unchanged from
+    `specs/001-pos-inventory-ledger/contracts/conventions.md`.
+
+    Two kinds of change:
+      * `POST /api/invoices` gains a refusal — a sale leaving any amount unpaid now requires Admin.
+      * `/api/customers/{id}/opening-balance` is new.
+
+servers:
+  - url: http://localhost:5080/api
+
+tags:
+  - name: Invoices
+    description: Selling. Changed by this feature.
+  - name: Customers
+    description: The udhaar register. Extended by this feature.
+
+paths:
+
+  /invoices:
+    post:
+      tags: [Invoices]
+      summary: Create a sale
+      description: |
+        **Changed by this feature (FR-051, FR-052).**
+
+        A sale that leaves any amount outstanding after the server recomputes the totals is a
+        credit (udhaar) sale, and only an Admin may create one. This is decided from the
+        recomputed `amountRemaining`, not from `paymentMethod` and not from any client-supplied
+        total — a sale marked `Cash` whose `amountPaid` is below the recomputed total is still
+        credit.
+
+        A Staff caller may create any sale that is settled in full at the counter (FR-053).
+
+        When refused, **nothing is written**: no invoice, no stock movement, no balance change
+        (FR-055).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvoiceRequest'
+      responses:
+        '201':
+          description: Sale recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateInvoiceResponse'
+        '403':
+          description: |
+            A Staff caller attempted a sale leaving an amount outstanding.
+            Error code `CREDIT_REQUIRES_ADMIN`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                data: null
+                error:
+                  code: CREDIT_REQUIRES_ADMIN
+                  message: >-
+                    Only the shop owner can approve udhaar. This sale leaves Rs 3,000.00 unpaid —
+                    take the full amount, or ask the owner to complete the sale.
+                  details: []
+                  traceId: 0HN7GK2K9J1P4:00000009
+        '422':
+          description: A business rule refused the sale (insufficient stock, customer required).
+
+  /customers/{id}/opening-balance:
+    put:
+      tags: [Customers]
+      summary: Record or correct what a customer already owed
+      description: |
+        **New in this feature (FR-065 … FR-073).**
+
+        Records the amount a customer owed before this software was in use, carried over from the
+        shop's paper register. Admin only (FR-068).
+
+        Idempotent in shape but not in effect: sending this a second time is a **correction** of
+        the figure, never an additional debt (FR-070). The customer's outstanding balance moves by
+        the *difference* between the old and new figures.
+
+        * First recording → an `OpeningBalance` entry appears in the customer's ledger.
+        * Correction → the original entry is left untouched and an `Adjustment` entry is appended
+          recording the old figure, the new figure and the reason (FR-071).
+
+        `reason` is **required when correcting** and optional on the first recording.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetOpeningBalanceRequest'
+            examples:
+              first:
+                summary: From the paper register
+                value:
+                  amount: 12000.00
+              correction:
+                summary: Fixing a mistyped figure
+                value:
+                  amount: 10000.00
+                  reason: Mistyped from the register; the correct figure is 10,000.
+      responses:
+        '200':
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpeningBalanceResponse'
+              example:
+                success: true
+                data:
+                  customerId: 7
+                  openingBalance: 10000.00
+                  previousOpeningBalance: 12000.00
+                  outstandingBalance: 13000.00
+                  wasCorrection: true
+                error: null
+        '400':
+          description: |
+            Amount is negative (FR-069) — refused by request validation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: |
+            A correction was sent without a reason (FR-071). This is a 422 rather than a 400
+            because whether a reason is required depends on whether the customer already has a
+            carried-forward figure — state the request validator cannot see.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: A Staff caller attempted to record or change an opening balance (FR-068).
+        '404':
+          description: No such customer.
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+
+    CreateInvoiceRequest:
+      type: object
+      description: |
+        Unchanged in shape by this feature. Shown only so the credit rule has context: the server
+        recomputes every line and the totals, and `amountPaid` below the recomputed total is what
+        makes the sale credit.
+      required: [items]
+      properties:
+        customerId:
+          type: integer
+          format: int64
+          nullable: true
+        newCustomer:
+          type: object
+          nullable: true
+          properties:
+            name: { type: string }
+            mobileNumber: { type: string, nullable: true }
+        orderDiscount: { type: number, format: double, default: 0 }
+        amountPaid: { type: number, format: double, default: 0 }
+        paymentMethod:
+          type: string
+          enum: [Cash, BankTransfer, JazzCash, EasyPaisa, Raast, Credit, Partial]
+          default: Cash
+        saleType:
+          type: string
+          enum: [Retail, Wholesale]
+          default: Retail
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productId, quantity, unitSalePrice]
+            properties:
+              productId: { type: integer, format: int64 }
+              quantity: { type: integer, minimum: 1 }
+              unitSalePrice: { type: number, format: double }
+              lineDiscount: { type: number, format: double, default: 0 }
+
+    CreateInvoiceResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            invoiceId: { type: integer, format: int64 }
+            invoiceNumber: { type: string }
+            total: { type: number, format: double }
+            amountPaid: { type: number, format: double }
+            amountRemaining: { type: number, format: double }
+            customerId: { type: integer, format: int64, nullable: true }
+            customerBalance: { type: number, format: double, nullable: true }
+        error: { nullable: true }
+
+    SetOpeningBalanceRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: number
+          format: double
+          minimum: 0
+          description: |
+            What the customer owed before the software was in use. Must not be negative — the
+            shop owing the customer is a different thing and is out of scope (FR-069).
+          example: 12000.00
+        reason:
+          type: string
+          maxLength: 255
+          nullable: true
+          description: |
+            Why this figure is being set. **Required when correcting an existing opening
+            balance** (FR-071); optional on the first recording, which is a statement of fact
+            from the paper register.
+
+    OpeningBalanceResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            customerId: { type: integer, format: int64 }
+            openingBalance:
+              type: number
+              format: double
+              description: The figure now in force.
+            previousOpeningBalance:
+              type: number
+              format: double
+              nullable: true
+              description: Null on a first recording; the superseded figure on a correction.
+            outstandingBalance:
+              type: number
+              format: double
+              description: |
+                The customer's total owed after this change, including everything sold on credit
+                and less everything paid.
+            wasCorrection:
+              type: boolean
+              description: True when an opening balance already existed and this replaced it.
+        error: { nullable: true }
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, enum: [false] }
+        data: { nullable: true }
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+            traceId: { type: string }

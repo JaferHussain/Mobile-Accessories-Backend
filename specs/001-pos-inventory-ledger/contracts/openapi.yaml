@@ -1,0 +1,1031 @@
+openapi: 3.0.3
+info:
+  title: Moiz Mobile POS API
+  version: 1.0.0
+  description: >
+    POS, inventory and customer ledger API for Moiz Mobile & Corporation, Danwran Lodhran.
+    Every response uses the envelope described in conventions.md. All money is decimal with
+    2 places; the server always recomputes totals from line items and ignores client totals.
+servers:
+  - url: /api
+
+tags:
+  - name: Auth
+  - name: Products
+  - name: Suppliers
+  - name: Purchases
+  - name: Customers
+  - name: Invoices
+  - name: Returns
+  - name: Expenses
+  - name: Reports
+  - name: Documents
+  - name: Admin
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ---------------------------------------------------------------- Auth
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Sign in and receive an access/refresh token pair
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, minLength: 3, maxLength: 50 }
+                password: { type: string, format: password, minLength: 8 }
+      responses:
+        '200': { $ref: '#/components/responses/AuthTokens' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Rotate a refresh token for a new pair
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/AuthTokens' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the caller's refresh token
+      responses:
+        '204': { description: Revoked }
+
+  /health:
+    get:
+      tags: [Admin]
+      security: []
+      summary: Liveness and database connectivity probe
+      responses:
+        '200': { description: Healthy }
+        '503': { description: Unhealthy }
+
+  # ------------------------------------------------------------ Products
+  /products:
+    get:
+      tags: [Products]
+      summary: Search and list products
+      description: >
+        Single `search` parameter matches name, brand, model, category or barcode (FR-003).
+        Staff receive ProductStaffDto (no costPrice); Admin receive ProductAdminDto.
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: lowStockOnly, in: query, schema: { type: boolean, default: false } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200':
+          description: Paged products
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              oneOf:
+                                - $ref: '#/components/schemas/ProductStaffDto'
+                                - $ref: '#/components/schemas/ProductAdminDto'
+    post:
+      tags: [Products]
+      summary: Create a product variant (Admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductUpsertRequest' }
+      responses:
+        '201': { description: Created }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /products/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Products]
+      summary: Get one product
+      responses:
+        '200': { description: Product }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [Products]
+      summary: Update a product (Admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductUpsertRequest' }
+      responses:
+        '200': { description: Updated }
+    delete:
+      tags: [Products]
+      summary: Deactivate a product (Admin only) — never hard-deleted
+      responses:
+        '204': { description: Deactivated }
+
+  /products/{id}/image:
+    post:
+      tags: [Products]
+      summary: Upload a product image (Admin only, max 2 MB)
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200': { description: Image stored, returns relative path }
+
+  /products/{id}/stock-movements:
+    get:
+      tags: [Products]
+      summary: Stock movement history for a product (FR-005)
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged movements }
+
+  /products/{id}/adjust-stock:
+    post:
+      tags: [Products]
+      summary: Manual stock adjustment (Admin only), audited
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newQuantity, note]
+              properties:
+                newQuantity: { type: integer, minimum: 0 }
+                note: { type: string, maxLength: 255 }
+      responses:
+        '200': { description: Adjusted }
+
+  # ----------------------------------------------------------- Suppliers
+  /suppliers:
+    get:
+      tags: [Suppliers]
+      summary: List suppliers with payable balances (Admin only)
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged suppliers }
+    post:
+      tags: [Suppliers]
+      summary: Create a supplier (Admin only)
+      responses:
+        '201': { description: Created }
+
+  /suppliers/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Suppliers]
+      summary: Supplier detail with running payable
+      responses:
+        '200': { description: Supplier }
+    put:
+      tags: [Suppliers]
+      summary: Update a supplier (Admin only)
+      responses:
+        '200': { description: Updated }
+
+  /suppliers/{id}/ledger:
+    get:
+      tags: [Suppliers]
+      summary: Purchases and payments with running payable balance (FR-010)
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+      responses:
+        '200': { description: Supplier ledger }
+
+  /suppliers/{id}/payments:
+    post:
+      tags: [Suppliers]
+      summary: Record a payment to a supplier (Admin only, FR-009)
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, paymentMethod]
+              properties:
+                amount: { type: number, format: double, minimum: 0.01 }
+                paymentMethod: { $ref: '#/components/schemas/PaymentMethod' }
+                note: { type: string, maxLength: 255 }
+                confirmOverpayment:
+                  type: boolean
+                  default: false
+                  description: Required true when amount exceeds the outstanding payable
+      responses:
+        '201': { description: Payment recorded }
+        '400': { $ref: '#/components/responses/Error' }
+
+  # ----------------------------------------------------------- Purchases
+  /purchases:
+    get:
+      tags: [Purchases]
+      summary: List purchases (Admin only)
+      parameters:
+        - { name: supplierId, in: query, schema: { type: integer } }
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged purchases }
+    post:
+      tags: [Purchases]
+      summary: Record a purchase (Admin only)
+      description: >
+        One transaction (FR-008, FR-011a): insert purchase, increase product stock,
+        OVERWRITE products.costPrice with unitCost, increase supplier payable, write
+        stock movement and audit rows. The new cost applies to all stock on hand.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [supplierId, productId, unitCost, quantity, purchaseDate]
+              properties:
+                supplierId: { type: integer }
+                productId: { type: integer }
+                unitCost: { type: number, format: double, minimum: 0.0001 }
+                quantity: { type: integer, minimum: 1 }
+                purchaseDate: { type: string, format: date-time }
+                newSalePrice:
+                  type: number
+                  format: double
+                  description: >
+                    Optional. When supplied, updates products.salePrice, which then applies
+                    to all remaining stock of that product (FR-011d).
+      responses:
+        '201': { description: Purchase recorded }
+        '400': { $ref: '#/components/responses/Error' }
+
+  # ----------------------------------------------------------- Customers
+  /customers:
+    get:
+      tags: [Customers]
+      summary: Search and list customers
+      parameters:
+        - { name: search, in: query, schema: { type: string }, description: name or mobile }
+        - { name: withBalanceOnly, in: query, schema: { type: boolean, default: false } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged customers }
+    post:
+      tags: [Customers]
+      summary: Create a customer (supports inline quick-create during a sale, FR-017)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 150 }
+                mobileNumber: { type: string, maxLength: 20 }
+                address: { type: string, maxLength: 255 }
+      responses:
+        '201': { description: Created }
+
+  /customers/{id}:
+    get:
+      tags: [Customers]
+      summary: Customer profile — totals purchased, paid, outstanding (FR-023)
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '200': { description: Customer profile }
+
+  /customers/{id}/ledger:
+    get:
+      tags: [Customers]
+      summary: Chronological ledger with running balance (FR-020)
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200':
+          description: Paged ledger entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/LedgerEntryDto' }
+
+  /customers/{id}/payments:
+    post:
+      tags: [Customers]
+      summary: Receive a payment from a customer (FR-021)
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, paymentMethod]
+              properties:
+                amount: { type: number, format: double, minimum: 0.01 }
+                paymentMethod: { $ref: '#/components/schemas/PaymentMethod' }
+                note: { type: string, maxLength: 255 }
+                confirmOverpayment:
+                  type: boolean
+                  default: false
+                  description: Required true when amount exceeds the balance (FR-022)
+      responses:
+        '201':
+          description: Payment recorded; returns receipt number and new balance
+        '400': { $ref: '#/components/responses/Error' }
+
+  # ------------------------------------------------------------ Invoices
+  /invoices:
+    get:
+      tags: [Invoices]
+      summary: List invoices
+      parameters:
+        - { name: customerId, in: query, schema: { type: integer } }
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged invoices }
+    post:
+      tags: [Invoices]
+      summary: Create a sale
+      description: >
+        One transaction (FR-015): lock affected product rows in id order, verify stock,
+        insert invoice and items snapshotting unitCostPrice, decrement stock, write stock
+        movements, and if amountRemaining > 0 raise the customer balance and append a
+        ledger entry. All totals are recomputed server-side; client totals are ignored.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema: { type: string, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateInvoiceRequest' }
+      responses:
+        '201':
+          description: Invoice created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/InvoiceDto' }
+        '400':
+          description: INSUFFICIENT_STOCK, DISCOUNT_EXCEEDS_TOTAL or CUSTOMER_REQUIRED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /invoices/{id}:
+    get:
+      tags: [Invoices]
+      summary: Invoice detail with line items
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '200': { description: Invoice }
+
+  # ------------------------------------------------------------- Returns
+  /sale-returns:
+    post:
+      tags: [Returns]
+      summary: Record a sale return (FR-024)
+      description: >
+        Reverses at the originally recorded unit sale price and unit cost price (R11).
+        One transaction: stock up, invoice_items.returnedQty up, invoice netAmount down,
+        and either customer balance down or refundDue recorded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoiceId, items]
+              properties:
+                invoiceId: { type: integer }
+                reason: { type: string, maxLength: 255 }
+                items:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [invoiceItemId, quantity]
+                    properties:
+                      invoiceItemId: { type: integer }
+                      quantity: { type: integer, minimum: 1 }
+      responses:
+        '201': { description: Return recorded }
+        '400':
+          description: RETURN_EXCEEDS_ORIGINAL
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+
+  /purchase-returns:
+    post:
+      tags: [Returns]
+      summary: Record a purchase return (Admin only, FR-025)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purchaseId, quantity]
+              properties:
+                purchaseId: { type: integer }
+                quantity: { type: integer, minimum: 1 }
+                reason: { type: string, maxLength: 255 }
+      responses:
+        '201': { description: Return recorded }
+        '400': { $ref: '#/components/responses/Error' }
+
+  # ------------------------------------------------------------ Expenses
+  /expenses:
+    get:
+      tags: [Expenses]
+      summary: List expenses (Admin only)
+      parameters:
+        - { name: categoryId, in: query, schema: { type: integer } }
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged expenses }
+    post:
+      tags: [Expenses]
+      summary: Record an expense (Admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [categoryId, amount, expenseDate]
+              properties:
+                categoryId: { type: integer }
+                amount: { type: number, format: double, minimum: 0.01 }
+                expenseDate: { type: string, format: date-time }
+                note: { type: string, maxLength: 255 }
+      responses:
+        '201': { description: Created }
+
+  /expense-categories:
+    get:
+      tags: [Expenses]
+      summary: List expense categories (Admin only)
+      responses:
+        '200': { description: Categories }
+    post:
+      tags: [Expenses]
+      summary: Add a category — the list is extensible (FR-029)
+      responses:
+        '201': { description: Created }
+
+  # ------------------------------------------------------------- Reports
+  /dashboard:
+    get:
+      tags: [Reports]
+      summary: Dashboard KPIs (Admin only, FR-035)
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema: { type: string, enum: [Today, ThisMonth, ThisYear] }
+      responses:
+        '200':
+          description: KPI set
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DashboardDto' }
+
+  /reports/sales:
+    get:
+      tags: [Reports]
+      summary: Sales report grouped by day, month or year (Admin only)
+      parameters:
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - name: groupBy
+          in: query
+          schema: { type: string, enum: [Day, Week, Month, Year], default: Day }
+      responses:
+        '200': { description: Sales rollup }
+
+  /reports/profit:
+    get:
+      tags: [Reports]
+      summary: Gross and net profit for a period (Admin only, FR-032)
+      parameters:
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - name: groupBy
+          in: query
+          schema: { type: string, enum: [Day, Week, Month, Year], default: Month }
+      responses:
+        '200': { description: Profit rollup }
+
+  /reports/profit-by-product:
+    get:
+      tags: [Reports]
+      summary: Product-wise profit — total sale, total cost, total profit (Admin only, FR-033)
+      parameters:
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged product profit }
+
+  /reports/stock:
+    get:
+      tags: [Reports]
+      summary: Current stock report (Admin only)
+      parameters:
+        - { name: lowStockOnly, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200': { description: Stock report }
+
+  /reports/stock-movements:
+    get:
+      tags: [Reports]
+      summary: Full stock movement history across products (Admin only, FR-036)
+      parameters:
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { name: reason, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged movements }
+
+  /reports/receivables:
+    get:
+      tags: [Reports]
+      summary: Customer outstanding report (Admin only)
+      responses:
+        '200': { description: Receivables }
+
+  /reports/payables:
+    get:
+      tags: [Reports]
+      summary: Supplier payable report (Admin only)
+      responses:
+        '200': { description: Payables }
+
+  /reports/expenses:
+    get:
+      tags: [Reports]
+      summary: Expense report by category and period (Admin only)
+      parameters:
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+      responses:
+        '200': { description: Expense rollup }
+
+  /reports/purchases:
+    get:
+      tags: [Reports]
+      summary: Total purchases for a period (Admin only)
+      parameters:
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+      responses:
+        '200': { description: Purchase rollup }
+
+  # ----------------------------------------------------------- Documents
+  /invoices/{id}/pdf:
+    get:
+      tags: [Documents]
+      summary: Download the branded invoice PDF (FR-042)
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '200':
+          description: PDF stream
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+
+  /customer-payments/{id}/pdf:
+    get:
+      tags: [Documents]
+      summary: Download the branded payment receipt PDF (FR-043)
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '200':
+          description: PDF stream
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+
+  /documents/share-link:
+    post:
+      tags: [Documents]
+      summary: Mint a tokenized share link and the wa.me deep link for a document (FR-044)
+      description: >
+        wa.me cannot carry an attachment (R2), so the returned whatsAppUrl contains a link
+        to the document rather than the file itself. Fails when the customer has no mobile
+        number on file.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [documentType, referenceId]
+              properties:
+                documentType: { type: string, enum: [Invoice, PaymentReceipt] }
+                referenceId: { type: integer }
+      responses:
+        '201':
+          description: Link minted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          shareUrl: { type: string, format: uri }
+                          whatsAppUrl: { type: string, format: uri }
+                          expiresAt: { type: string, format: date-time }
+        '400':
+          description: Customer has no mobile number on file
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+
+  /public/documents/{token}:
+    get:
+      tags: [Documents]
+      security: []
+      summary: Retrieve a shared document by token — THE ONLY UNAUTHENTICATED DATA ENDPOINT
+      description: >
+        Deliberate, justified exception to per-endpoint authentication (see plan.md).
+        Returns exactly one PDF. Expired, revoked and unknown tokens all return 404 without
+        distinguishing between them. Rate-limited; every access is logged.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, minLength: 22 }
+      responses:
+        '200':
+          description: PDF stream
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '404': { description: Unknown, expired or revoked }
+
+  # --------------------------------------------------------------- Admin
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List users (Admin only)
+      responses:
+        '200': { description: Users }
+    post:
+      tags: [Admin]
+      summary: Create a user (Admin only)
+      responses:
+        '201': { description: Created }
+
+  /admin/audit:
+    get:
+      tags: [Admin]
+      summary: Audit trail of stock and ledger changes (Admin only, FR-041)
+      parameters:
+        - { name: entityType, in: query, schema: { type: string } }
+        - { name: entityId, in: query, schema: { type: integer } }
+        - { name: userId, in: query, schema: { type: integer } }
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { description: Paged audit entries }
+
+  /admin/backups:
+    get:
+      tags: [Admin]
+      summary: List available backups (Admin only)
+      responses:
+        '200': { description: Backup list }
+    post:
+      tags: [Admin]
+      summary: Take a backup now (Admin only, FR-046)
+      responses:
+        '202': { description: Backup started }
+
+  /admin/backups/restore:
+    post:
+      tags: [Admin]
+      summary: Restore from a backup (Admin only, FR-046/047)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [backupFileName, confirm]
+              properties:
+                backupFileName: { type: string }
+                confirm:
+                  type: boolean
+                  description: Must be true — restore overwrites all current data
+      responses:
+        '202': { description: Restore started }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    From:
+      name: from
+      in: query
+      schema: { type: string, format: date-time }
+    To:
+      name: to
+      in: query
+      schema: { type: string, format: date-time }
+
+  responses:
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Envelope' }
+    AuthTokens:
+      description: Token pair
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      accessToken: { type: string }
+                      refreshToken: { type: string }
+                      expiresAt: { type: string, format: date-time }
+                      user:
+                        type: object
+                        properties:
+                          id: { type: integer }
+                          username: { type: string }
+                          fullName: { type: string }
+                          role: { type: string, enum: [Admin, Staff] }
+
+  schemas:
+    Envelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        data: { nullable: true }
+        error:
+          nullable: true
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            traceId: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+
+    PaymentMethod:
+      type: string
+      enum: [Cash, BankTransfer, JazzCash, EasyPaisa, Raast, Credit, Partial]
+
+    ProductStaffDto:
+      type: object
+      description: Staff-facing product. Has NO costPrice or profit property by design (FR-040).
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        category: { type: string }
+        brand: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        barcode: { type: string, nullable: true }
+        imagePath: { type: string, nullable: true }
+        salePrice: { type: number, format: double }
+        quantityOnHand: { type: integer }
+        isLowStock: { type: boolean }
+
+    ProductAdminDto:
+      allOf:
+        - $ref: '#/components/schemas/ProductStaffDto'
+        - type: object
+          properties:
+            costPrice: { type: number, format: double }
+            wholesalePrice: { type: number, format: double }
+            retailPrice: { type: number, format: double }
+            minStockThreshold: { type: integer }
+            supplierId: { type: integer, nullable: true }
+
+    ProductUpsertRequest:
+      type: object
+      required: [name, category, costPrice, salePrice, minStockThreshold]
+      properties:
+        name: { type: string, maxLength: 150 }
+        category: { type: string, maxLength: 80 }
+        brand: { type: string, maxLength: 80 }
+        model: { type: string, maxLength: 80 }
+        barcode: { type: string, maxLength: 64 }
+        costPrice: { type: number, format: double, minimum: 0 }
+        wholesalePrice: { type: number, format: double, minimum: 0 }
+        retailPrice: { type: number, format: double, minimum: 0 }
+        salePrice: { type: number, format: double, minimum: 0 }
+        quantityOnHand: { type: integer, minimum: 0 }
+        minStockThreshold: { type: integer, minimum: 0 }
+        supplierId: { type: integer, nullable: true }
+
+    CreateInvoiceRequest:
+      type: object
+      required: [items, payments]
+      properties:
+        customerId:
+          type: integer
+          nullable: true
+          description: Required when the sale is not fully paid (FR-017)
+        newCustomer:
+          type: object
+          nullable: true
+          description: Inline quick-create; used when customerId is absent
+          properties:
+            name: { type: string }
+            mobileNumber: { type: string }
+        orderDiscount: { type: number, format: double, minimum: 0, default: 0 }
+        paymentMethod: { $ref: '#/components/schemas/PaymentMethod' }
+        amountPaid: { type: number, format: double, minimum: 0 }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productId, quantity, unitSalePrice]
+            properties:
+              productId: { type: integer }
+              quantity: { type: integer, minimum: 1 }
+              unitSalePrice: { type: number, format: double, minimum: 0 }
+              lineDiscount: { type: number, format: double, minimum: 0, default: 0 }
+        payments:
+          type: array
+          description: One entry for a single method; two for a cash + credit split (FR-014)
+          items:
+            type: object
+            properties:
+              method: { $ref: '#/components/schemas/PaymentMethod' }
+              amount: { type: number, format: double }
+
+    InvoiceDto:
+      type: object
+      properties:
+        id: { type: integer }
+        invoiceNumber: { type: string }
+        invoiceDate: { type: string, format: date-time }
+        customerId: { type: integer, nullable: true }
+        customerName: { type: string, nullable: true }
+        subtotal: { type: number, format: double }
+        orderDiscount: { type: number, format: double }
+        total: { type: number, format: double }
+        amountPaid: { type: number, format: double }
+        amountRemaining: { type: number, format: double }
+        netAmount: { type: number, format: double }
+        paymentMethod: { $ref: '#/components/schemas/PaymentMethod' }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              productId: { type: integer }
+              productName: { type: string }
+              quantity: { type: integer }
+              unitSalePrice: { type: number, format: double }
+              lineDiscount: { type: number, format: double }
+              lineTotal: { type: number, format: double }
+              returnedQty: { type: integer }
+
+    LedgerEntryDto:
+      type: object
+      properties:
+        id: { type: integer }
+        entryDate: { type: string, format: date-time }
+        entryType: { type: string, enum: [Invoice, Payment, SaleReturn, Adjustment] }
+        referenceNumber: { type: string, nullable: true }
+        billAmount: { type: number, format: double }
+        paidAmount: { type: number, format: double }
+        balanceAfter: { type: number, format: double }
+
+    DashboardDto:
+      type: object
+      properties:
+        period: { type: string, enum: [Today, ThisMonth, ThisYear] }
+        totalSales: { type: number, format: double }
+        totalPurchases: { type: number, format: double }
+        grossProfit: { type: number, format: double }
+        totalExpenses: { type: number, format: double }
+        netProfit: { type: number, format: double }
+        cashSales: { type: number, format: double }
+        creditSales: { type: number, format: double }
+        totalReceivables: { type: number, format: double }
+        totalPayables: { type: number, format: double }
+        itemsSoldCount: { type: integer }
+        lowStockProducts:
+          type: array
+          items: { $ref: '#/components/schemas/ProductStaffDto' }
