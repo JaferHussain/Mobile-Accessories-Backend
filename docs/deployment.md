@@ -81,8 +81,57 @@ admin / Admin@123
 
 ## Settings
 
-All of these live in `appsettings.json` and can be overridden by environment variables using
-`Section__Key` (double underscore).
+Three files, read in order — later ones override earlier:
+
+| File | When it is read |
+|---|---|
+| `appsettings.json` | always; safe defaults, no secrets |
+| `appsettings.Development.json` | `ASPNETCORE_ENVIRONMENT=Development` |
+| `appsettings.Production.json` | `ASPNETCORE_ENVIRONMENT=Production` — **the shop machine** |
+
+Set the environment before starting the API on the shop machine:
+
+```bash
+setx ASPNETCORE_ENVIRONMENT Production /M
+```
+
+Anything can still be overridden by an environment variable using `Section__Key` (double
+underscore).
+
+### What `appsettings.Production.json` already sets
+
+- **Binds `http://0.0.0.0:5080`**, not localhost, so a tablet on the shop network can reach the
+  counter app. Windows Firewall must allow inbound TCP 5080 on the *private* profile:
+  `netsh advfirewall firewall add rule name="MoizPOS API" dir=in action=allow protocol=TCP localport=5080 profile=private`
+- **Backups to `E:\MoizPosBackups`** — a different drive from MySQL's data, which is on `C:`.
+  A backup on the same drive as the database dies with it.
+- **Logs to `E:\MoizPosData\logs`** and **product photos to `E:\MoizPosData\products`** —
+  both absolute and outside the application folder, so republishing the app never deletes the
+  shop's own data or its history.
+- **`Backup:ToolsDirectory`** points at the MySQL `bin` folder, because `mysqldump` is not on
+  `PATH` on this machine. Verified: a triggered backup wrote a 51 KB dump to `E:\MoizPosBackups`.
+- **Swagger is off.** It is registered only in Development.
+
+### Two things you must still fill in
+
+1. **`Cors:AllowedOrigins`** — the exact origin the counter app is served from, e.g.
+   `http://192.168.1.10`. If it is wrong the browser blocks every call and the screen looks broken
+   with no visible error. It currently lists only `http://localhost`.
+2. **`Documents:PublicBaseUrl`** — left empty on purpose. Receipt links are opened on a
+   *customer's* phone, which is not on the shop network, so a LAN address cannot work here. Until
+   there is an address reachable from outside, the share button explains itself instead of sending
+   a link that goes nowhere.
+
+### Secrets are not in any of those files
+
+```bash
+setx ConnectionStrings__Default "Server=localhost;Database=moizpos;Uid=moizpos_app;Pwd=<password>;" /M
+setx Jwt__Key "<at least 32 random characters>" /M
+```
+
+The API refuses to start if `Jwt:Key` is missing or too short, rather than running insecurely.
+
+### Full reference
 
 | Setting | Default | What it does |
 |---|---|---|
