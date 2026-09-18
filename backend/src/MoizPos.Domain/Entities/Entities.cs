@@ -64,6 +64,12 @@ public sealed class Brand
 
     public string? Description { get; set; }
 
+    /// <summary>
+    /// True when the owner has marked this brand as locally made (FR-087a). Defaults to false, so
+    /// a brand is Imported until the owner says otherwise.
+    /// </summary>
+    public bool IsLocal { get; set; }
+
     public bool IsActive { get; set; } = true;
 }
 

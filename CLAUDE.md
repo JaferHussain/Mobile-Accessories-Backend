@@ -34,6 +34,26 @@ cd frontend && npm run test && npx tsc --noEmit
 Integration tests need MySQL running. They create and drop their own schema in `moizpos_test`
 and refuse to run against a database whose name lacks "test".
 
+## Product search
+
+Search splits what is typed into words; a product is listed only when **every** word appears in its
+name, model, brand or category. `c type`, `type-c` and `typec` all find "Type-C", and `oppo charger`
+finds only Oppo chargers (feature 003).
+
+- **The rules live in `ProductSearchTerms`** (Application, pure): split on non-alphanumerics,
+  lower-case, strip one trailing `s` from words of **4+ characters**, de-duplicate, cap at 8 words.
+  A search of only one-letter words throws `SearchTooShortException` (400 `VALIDATION_FAILED`).
+- **Each field is normalised on its own** in SQL — `REGEXP_REPLACE(LOWER(col), '[^a-z0-9]', '')` —
+  and **never concatenated first**. Concatenating would let a word match across the boundary
+  between two fields.
+- A full barcode is still matched exactly and whole, as an alternative to the word match.
+- **Search is shared by the Products, POS and Purchases screens.** A change to it is a change to
+  all three. The POS takes the first result, so result order (by name) matters there.
+- It normalises at query time rather than from a stored column so a brand or category rename can
+  never leave search stale. `A_multi_word_search_across_five_thousand_products_is_under_a_second`
+  guards the cost; if it ever fails, the stored-column fallback is documented in
+  `specs/003-product-filters-search/plan.md` — do not loosen the bound.
+
 ## Credit authority
 
 **Only an Admin may complete a sale that leaves any amount outstanding** (FR-051, FR-052). A
@@ -106,6 +126,10 @@ into foreign keys, migrating every distinct value that existed rather than disca
   row instead: products keep their label, and the retired row simply stops being offered.
 - `ProductRow.Category` and `.Brand` are the joined **names**, for display; `CategoryId` and
   `BrandId` are what a write accepts.
+- **Local brands** (feature 003): `brands.is_local` defaults to **Imported**, so nothing is local
+  until the owner marks it. The Products `localOnly` filter requires `b.is_local = TRUE`, which
+  through the `LEFT JOIN` deliberately excludes **unbranded** products — local is a property of a
+  brand, and an imported item saved without one must not be misreported as local.
 
 ## The two business rules that drive the design
 
@@ -134,6 +158,7 @@ Each of these caused a real bug during the build.
 | A new validator in the `Api` project | Never runs unless its assembly is scanned | `Program.cs` scans **both** Application and Api |
 | A new enum on a request | Rejected as a 400 unless serialised by name | `JsonStringEnumConverter` is registered; keep it |
 | Deciding "is this a credit sale?" from the request | The client controls `amountPaid` and `paymentMethod`, so the rule is evadable | Read `totals.AmountRemaining` after the server recomputes, never the request |
+| Sending a search the server now refuses | A one-letter search returns 400; the POS surfaced it as an error at the counter | `PosPage` treats `VALIDATION_FAILED` from search as "no product found"; `ProductsPage` shows a hint and doesn't send it |
 | Selecting `products.category` directly | The column no longer exists — it is `category_id`, joined to `categories` | Join `categories c ON c.id = p.category_id` and select `c.name` |
 | Two cart lines for one product | Each checks stock against the same locked row and can oversell | `InvoiceService` refuses duplicates; the POS merges them |
 

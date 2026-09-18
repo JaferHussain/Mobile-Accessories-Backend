@@ -25,6 +25,9 @@ public sealed record BrandDto
 
     public string? Description { get; init; }
 
+    /// <summary>True for a locally made brand, false for an imported one (FR-087a).</summary>
+    public bool IsLocal { get; init; }
+
     public bool IsActive { get; init; }
 
     public int ProductCount { get; init; }
@@ -42,6 +45,12 @@ public sealed record BrandUpsertRequest
     public string Name { get; init; } = string.Empty;
 
     public string? Description { get; init; }
+
+    /// <summary>
+    /// Omitted means Imported. A brand is never assumed local — the owner has to say so, or stock
+    /// would be misreported under the Local filter (FR-087a).
+    /// </summary>
+    public bool IsLocal { get; init; }
 }
 
 public sealed class CategoryUpsertValidator : AbstractValidator<CategoryUpsertRequest>

@@ -66,6 +66,7 @@ public sealed class ProductsController : ControllerBase
         [FromQuery] long? categoryId,
         [FromQuery] long? brandId,
         [FromQuery] SaleType saleType = SaleType.Retail,
+        [FromQuery] bool localOnly = false,
         [FromQuery] bool lowStockOnly = false,
         [FromQuery] bool includeInactive = false,
         [FromQuery] int page = 1,
@@ -78,6 +79,7 @@ public sealed class ProductsController : ControllerBase
             CategoryId = categoryId,
             BrandId = brandId,
             SaleType = saleType,
+            LocalOnly = localOnly,
             LowStockOnly = lowStockOnly,
             // Only an Admin manages the catalogue, so only an Admin sees retired products.
             IncludeInactive = includeInactive && CurrentUser.IsAdmin(User),

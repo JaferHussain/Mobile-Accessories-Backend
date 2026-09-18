@@ -69,7 +69,23 @@ public sealed class ProductService : IProductService
         CancellationToken cancellationToken = default)
     {
         var (page, pageSize) = PagedResult<ProductStaffDto>.Normalize(query.Page, query.PageSize);
-        var normalized = query with { Page = page, PageSize = pageSize };
+
+        // Every rule about what the shopkeeper typed is decided here, once, for all three screens
+        // that search — Products, the POS lookup and the Purchases picker.
+        var terms = ProductSearchTerms.Parse(query.Search);
+
+        if (terms.IsTooShort)
+        {
+            throw new SearchTooShortException();
+        }
+
+        var normalized = query with
+        {
+            Search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
+            SearchWords = terms.Words,
+            Page = page,
+            PageSize = pageSize,
+        };
 
         var (rows, total) = await _products.SearchAsync(normalized, cancellationToken);
 
@@ -189,6 +205,7 @@ public sealed class ProductService : IProductService
                 Category = row.Category,
                 BrandId = row.BrandId,
                 Brand = row.Brand,
+                BrandIsLocal = row.BrandIsLocal,
                 Model = row.Model,
                 Barcode = row.Barcode,
                 ImagePath = row.ImagePath,
@@ -207,6 +224,7 @@ public sealed class ProductService : IProductService
             Category = row.Category,
             BrandId = row.BrandId,
             Brand = row.Brand,
+            BrandIsLocal = row.BrandIsLocal,
             Model = row.Model,
             Barcode = row.Barcode,
             ImagePath = row.ImagePath,

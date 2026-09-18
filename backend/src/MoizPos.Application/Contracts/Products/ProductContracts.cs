@@ -32,6 +32,12 @@ public record ProductStaffDto
 
     public string? Brand { get; init; }
 
+    /// <summary>
+    /// Whether this product's brand is marked local. Not cost, margin or profit, so it is safe on the
+    /// Staff shape; false for an unbranded product.
+    /// </summary>
+    public bool BrandIsLocal { get; init; }
+
     public string? Model { get; init; }
 
     public string? Barcode { get; init; }

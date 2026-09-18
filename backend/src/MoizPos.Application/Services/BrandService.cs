@@ -75,7 +75,13 @@ public sealed class BrandService : IBrandService
         await EnsureNameIsFreeAsync(name, null, cancellationToken);
 
         return await _brands.CreateAsync(
-            new Brand { Name = name, Description = Trim(request.Description), IsActive = true },
+            new Brand
+            {
+                Name = name,
+                Description = Trim(request.Description),
+                IsLocal = request.IsLocal,
+                IsActive = true,
+            },
             cancellationToken);
     }
 
@@ -92,7 +98,13 @@ public sealed class BrandService : IBrandService
         await EnsureNameIsFreeAsync(name, id, cancellationToken);
 
         await _brands.UpdateAsync(
-            new Brand { Id = id, Name = name, Description = Trim(request.Description) },
+            new Brand
+            {
+                Id = id,
+                Name = name,
+                Description = Trim(request.Description),
+                IsLocal = request.IsLocal,
+            },
             cancellationToken);
     }
 
@@ -124,6 +136,7 @@ public sealed class BrandService : IBrandService
             Id = brand.Id,
             Name = brand.Name,
             Description = brand.Description,
+            IsLocal = brand.IsLocal,
             IsActive = brand.IsActive,
             ProductCount = await _brands.ProductCountAsync(brand.Id, cancellationToken),
         };

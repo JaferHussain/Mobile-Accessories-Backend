@@ -127,6 +127,27 @@ public sealed class PerformanceTests
     }
 
     [Fact]
+    public async Task A_multi_word_search_across_five_thousand_products_is_under_a_second()
+    {
+        await EnsureCatalogueAsync();
+
+        var products = new ProductService(
+            new ProductRepository(Factory()),
+            new CategoryRepository(Factory()),
+            new BrandRepository(Factory()));
+
+        // SC-025. The heaviest ordinary shape: three words, each normalised against four fields,
+        // every row scanned. If this fails, apply the stored-column fallback documented in
+        // specs/003-product-filters-search/plan.md — do not loosen the bound.
+        var elapsed = await MeasureAsync(async () =>
+            await products.SearchAsync(
+                new ProductQuery { Search = "baseus cable m", Page = 1, PageSize = 25 },
+                UserRole.Staff));
+
+        elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task A_barcode_lookup_at_the_counter_is_immediate()
     {
         await EnsureCatalogueAsync();

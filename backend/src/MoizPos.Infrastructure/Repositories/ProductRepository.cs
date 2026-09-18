@@ -33,6 +33,7 @@ public sealed class ProductRepository : IProductRepository
         c.name                AS Category,
         p.brand_id            AS BrandId,
         b.name                AS Brand,
+        COALESCE(b.is_local, FALSE) AS BrandIsLocal,
         p.model               AS Model,
         p.barcode             AS Barcode,
         p.image_path          AS ImagePath,
@@ -64,22 +65,42 @@ public sealed class ProductRepository : IProductRepository
             where.Append(" AND p.is_active = TRUE");
         }
 
-        if (!string.IsNullOrWhiteSpace(query.Search))
+        if (query.SearchWords.Count > 0)
         {
-            // One search box across name, brand, model, category and barcode (FR-003).
-            // LIKE rather than MATCH...AGAINST: the shopkeeper types partial words ("brai" for
-            // "braided") and fulltext boolean mode would miss those without wildcards, while a
-            // 5,000-row catalogue is far too small for the index to matter.
-            where.Append("""
-                 AND (p.name LIKE @search
-                   OR b.name LIKE @search
-                   OR p.model LIKE @search
-                   OR c.name LIKE @search
-                   OR p.barcode = @exactSearch)
+            // Word-by-word search (FR-074 … FR-080). Each word must appear in at least one of the
+            // product's name, model, brand or category; every word must match.
+            //
+            // Each field is normalised ON ITS OWN — lower-cased, everything but letters and digits
+            // removed — so "Type-C Braided Cable" becomes "typecbraidedcable" and "typec" matches.
+            // Fields are never concatenated first: that would let a word match across the boundary
+            // between two of them ("leba" in "cabLE" + "BAseus").
+            //
+            // LIKE rather than MATCH...AGAINST: fulltext tokenises on word boundaries, so "typec"
+            // could never match "Type-C", and InnoDB's minimum token length drops the "c" from
+            // "c type". A 5,000-row catalogue is small enough to scan (research R4).
+            //
+            // The words arrive already reduced to [a-z0-9] by ProductSearchTerms and are still
+            // bound as parameters — never concatenated into the SQL.
+            var matches = new List<string>(query.SearchWords.Count);
+
+            for (var i = 0; i < query.SearchWords.Count; i++)
+            {
+                var name = $"word{i}";
+
+                matches.Add($"""
+                    (REGEXP_REPLACE(LOWER(p.name),  '[^a-z0-9]', '') LIKE @{name}
+                  OR REGEXP_REPLACE(LOWER(p.model), '[^a-z0-9]', '') LIKE @{name}
+                  OR REGEXP_REPLACE(LOWER(b.name),  '[^a-z0-9]', '') LIKE @{name}
+                  OR REGEXP_REPLACE(LOWER(c.name),  '[^a-z0-9]', '') LIKE @{name})
                 """);
 
-            parameters.Add("search", $"%{query.Search.Trim()}%");
-            parameters.Add("exactSearch", query.Search.Trim());
+                parameters.Add(name, $"%{query.SearchWords[i]}%");
+            }
+
+            // A scanned barcode is matched exactly and whole, as it always was (FR-080), as an
+            // alternative to the word match.
+            where.Append(" AND ((").Append(string.Join(" AND ", matches)).Append(") OR p.barcode = @exactSearch)");
+            parameters.Add("exactSearch", query.Search ?? string.Empty);
         }
 
         if (query.CategoryId.HasValue)
@@ -92,6 +113,13 @@ public sealed class ProductRepository : IProductRepository
         {
             where.Append(" AND p.brand_id = @brandId");
             parameters.Add("brandId", query.BrandId.Value);
+        }
+
+        if (query.LocalOnly)
+        {
+            // Through the LEFT JOIN, an unbranded product has b.is_local NULL, which is not TRUE —
+            // so it is excluded here with no special case (data-model §5).
+            where.Append(" AND b.is_local = TRUE");
         }
 
         if (query.LowStockOnly)

@@ -53,6 +53,21 @@ public sealed class CreditRequiresAdminException : DomainException
     public decimal AmountRemaining { get; }
 }
 
+/// <summary>
+/// A product search made only of one-letter words (FR-079).
+///
+/// A plain <see cref="DomainException"/>, which the middleware maps to 400: the caller fixes it by
+/// typing more. Raised by the service rather than a request validator because <c>search</c>
+/// arrives on the query string, and FluentValidation in this codebase validates request bodies.
+/// </summary>
+public sealed class SearchTooShortException : DomainException
+{
+    public SearchTooShortException()
+        : base(ErrorCodes.ValidationFailed, "Type at least 2 letters to search.")
+    {
+    }
+}
+
 /// <summary>A sale or purchase return would drive stock below zero (FR-006, FR-016).</summary>
 public sealed class InsufficientStockException : DomainException
 {

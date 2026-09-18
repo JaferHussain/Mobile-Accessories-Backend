@@ -269,6 +269,71 @@ public sealed class CategoryAndBrandTests
             .StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    // ---------------------------------------------------------------- local brands (FR-087a)
+
+    [Fact]
+    public async Task A_new_brand_is_imported_unless_marked_local()
+    {
+        var admin = await ClientAsync(UserRole.Admin);
+
+        var response = await admin.PostAsJsonAsync("/api/brands", new { name = Unique("Imp") });
+        var created = (await response.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!.Data!;
+
+        // Nothing is local until the owner says so; guessing would misreport stock.
+        created.GetProperty("isLocal").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_brand_can_be_created_as_local()
+    {
+        var admin = await ClientAsync(UserRole.Admin);
+
+        var response = await admin.PostAsJsonAsync(
+            "/api/brands", new { name = Unique("Loc"), isLocal = true });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var created = (await response.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!.Data!;
+        created.GetProperty("isLocal").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Marking_a_brand_local_takes_effect_immediately()
+    {
+        var admin = await ClientAsync(UserRole.Admin);
+        var name = Unique("Flip");
+
+        var created = await admin.PostAsJsonAsync("/api/brands", new { name });
+        var id = (await created.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
+            .Data!.GetProperty("id").GetInt64();
+
+        await admin.PutAsJsonAsync($"/api/brands/{id}", new { name, isLocal = true });
+
+        // SC-027: no delay, no cache to wait out.
+        var afterLocal = await admin.GetFromJsonAsync<Envelope<JsonElement>>($"/api/brands/{id}", Json);
+        afterLocal!.Data!.GetProperty("isLocal").GetBoolean().Should().BeTrue();
+
+        await admin.PutAsJsonAsync($"/api/brands/{id}", new { name, isLocal = false });
+
+        var afterImported = await admin.GetFromJsonAsync<Envelope<JsonElement>>($"/api/brands/{id}", Json);
+        afterImported!.Data!.GetProperty("isLocal").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_salesman_cannot_mark_a_brand_local()
+    {
+        var admin = await ClientAsync(UserRole.Admin);
+        var staff = await ClientAsync(UserRole.Staff);
+        var name = Unique("Guard");
+
+        var created = await admin.PostAsJsonAsync("/api/brands", new { name });
+        var id = (await created.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
+            .Data!.GetProperty("id").GetInt64();
+
+        (await staff.PutAsJsonAsync($"/api/brands/{id}", new { name, isLocal = true }))
+            .StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
     [Fact]
     public async Task A_product_may_have_no_brand_at_all()
     {

@@ -6,7 +6,17 @@ namespace MoizPos.Application.Abstractions;
 /// <summary>Paging and filtering for a product listing.</summary>
 public sealed record ProductQuery
 {
+    /// <summary>
+    /// The text as typed. Used only for the exact barcode comparison (FR-080); word matching reads
+    /// <see cref="SearchWords"/>.
+    /// </summary>
     public string? Search { get; init; }
+
+    /// <summary>
+    /// The normalised words from <c>ProductSearchTerms</c>. Every one must match (FR-074). Set by
+    /// the service, never by a controller, so the rules in one place decide what is searched.
+    /// </summary>
+    public IReadOnlyList<string> SearchWords { get; init; } = [];
 
     public long? CategoryId { get; init; }
 
@@ -21,6 +31,12 @@ public sealed record ProductQuery
     /// price to charge for the sale they are making, and cost stays out of reach either way.</para>
     /// </summary>
     public SaleType SaleType { get; init; } = SaleType.Retail;
+
+    /// <summary>
+    /// Only products whose brand the owner has marked local (FR-087). An unbranded product is never
+    /// local — a brand is what carries the flag.
+    /// </summary>
+    public bool LocalOnly { get; init; }
 
     public bool LowStockOnly { get; init; }
 
@@ -46,6 +62,9 @@ public sealed record ProductRow
     public long? BrandId { get; init; }
 
     public string? Brand { get; init; }
+
+    /// <summary>False for an imported brand and for a product with no brand at all.</summary>
+    public bool BrandIsLocal { get; init; }
 
     public string? Model { get; init; }
 

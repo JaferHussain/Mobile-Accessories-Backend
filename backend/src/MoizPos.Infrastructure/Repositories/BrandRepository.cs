@@ -41,6 +41,7 @@ public sealed class BrandRepository : IBrandRepository
             SELECT id          AS Id,
                    name        AS Name,
                    description AS Description,
+                   is_local    AS IsLocal,
                    is_active   AS IsActive
             FROM brands
             {where}
@@ -65,7 +66,7 @@ public sealed class BrandRepository : IBrandRepository
 
         return await connection.QuerySingleOrDefaultAsync<Brand>(
             """
-            SELECT id AS Id, name AS Name, description AS Description, is_active AS IsActive
+            SELECT id AS Id, name AS Name, description AS Description, is_local AS IsLocal, is_active AS IsActive
             FROM brands WHERE id = @id LIMIT 1;
             """,
             new { id });
@@ -77,8 +78,8 @@ public sealed class BrandRepository : IBrandRepository
 
         return await connection.ExecuteScalarAsync<long>(
             """
-            INSERT INTO brands (name, description, is_active, created_at_utc)
-            VALUES (@Name, @Description, TRUE, UTC_TIMESTAMP(6));
+            INSERT INTO brands (name, description, is_local, is_active, created_at_utc)
+            VALUES (@Name, @Description, @IsLocal, TRUE, UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
             brand);
@@ -92,7 +93,8 @@ public sealed class BrandRepository : IBrandRepository
         await connection.ExecuteAsync(
             """
             UPDATE brands
-            SET name = @Name, description = @Description, updated_at_utc = UTC_TIMESTAMP(6)
+            SET name = @Name, description = @Description, is_local = @IsLocal,
+                updated_at_utc = UTC_TIMESTAMP(6)
             WHERE id = @Id;
             """,
             brand);

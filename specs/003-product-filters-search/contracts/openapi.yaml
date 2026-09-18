@@ -1,0 +1,193 @@
+openapi: 3.0.3
+
+info:
+  title: Moiz Mobile POS — Product Filters & Forgiving Search
+  version: "3.0.0"
+  description: |
+    Delta on top of features 001 and 002. Conventions (base path, envelope, auth, money format)
+    are inherited unchanged from `specs/001-pos-inventory-ledger/contracts/conventions.md`.
+
+    Changes:
+      * `GET /api/products` — `search` now matches word by word (FR-074 … FR-080), and gains
+        `localOnly`. `brandId` and `categoryId` already existed; they are documented here because
+        the Products screen now uses them.
+      * `GET /api/products/{id}` and `/by-barcode/{barcode}` — responses gain `brandIsLocal`.
+      * `/api/brands` — create, update and read gain `isLocal`.
+
+servers:
+  - url: http://localhost:5080/api
+
+paths:
+
+  /products:
+    get:
+      tags: [Products]
+      summary: Search and filter the catalogue
+      description: |
+        **Search is changed by this feature.** The typed text is split into words; a product is
+        returned only when **every** word appears in its name, model, brand or category, compared
+        with case, spaces, hyphens and punctuation ignored. Word order does not matter, and a
+        typed plural matches a singular name.
+
+        `c type`, `type c`, `type-c` and `typec` all return a product named "Type-C Braided Cable".
+
+        A full barcode still returns that exact product.
+
+        **Shared by three screens**: Products, the POS lookup and the Purchases picker all call
+        this endpoint, so the improved search applies to all of them.
+
+        Every filter present is combined with AND.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema: { type: string, maxLength: 200 }
+          description: |
+            Free text. Split into at most 8 words. A search made only of one-letter words is
+            refused with 400 (FR-079); a one-letter word alongside a longer one is fine.
+          examples:
+            cType: { value: "c type" }
+            brandAndCategory: { value: "oppo charger" }
+            barcode: { value: "8901234567890" }
+        - name: brandId
+          in: query
+          required: false
+          schema: { type: integer, format: int64 }
+          description: Only products of this brand (FR-082).
+        - name: categoryId
+          in: query
+          required: false
+          schema: { type: integer, format: int64 }
+          description: Only products in this category (FR-082).
+        - name: localOnly
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: |
+            **New.** Only products whose brand is marked local (FR-087). Products with no brand are
+            never included.
+        - name: lowStockOnly
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Unchanged.
+        - name: saleType
+          in: query
+          required: false
+          schema: { type: string, enum: [Retail, Wholesale], default: Retail }
+          description: Unchanged. Decides which price is returned; filters never affect it (FR-090).
+        - name: includeInactive
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Unchanged. Honoured for Admin only.
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 25 }
+      responses:
+        '200':
+          description: |
+            A page of products, ordered by name. An empty `items` list is a valid answer and means
+            nothing matched; the screen explains it (FR-086).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/ProductListItem' }
+                      page: { type: integer }
+                      pageSize: { type: integer }
+                      totalItems: { type: integer }
+                      totalPages: { type: integer }
+        '400':
+          description: |
+            The search consists only of one-letter words. Code `VALIDATION_FAILED`, message
+            "Type at least 2 letters to search."
+
+  /brands:
+    post:
+      tags: [Brands]
+      summary: Create a brand
+      description: |
+        **Changed.** Accepts `isLocal`; omitted means Imported (FR-087a). Admin only, unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BrandUpsert' }
+      responses:
+        '201': { description: Created. The response carries `isLocal`. }
+
+  /brands/{id}:
+    put:
+      tags: [Brands]
+      summary: Update a brand
+      description: |
+        **Changed.** `isLocal` may be changed here, and the Local filter reflects it immediately
+        (SC-027). Admin only, unchanged.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BrandUpsert' }
+      responses:
+        '200': { description: Updated. }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    BrandUpsert:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 80 }
+        description: { type: string, maxLength: 255, nullable: true }
+        isLocal:
+          type: boolean
+          default: false
+          description: True for a locally made brand; false (the default) for an imported one.
+
+    ProductListItem:
+      type: object
+      description: |
+        The Staff shape, unchanged except for `brandIsLocal`. An Admin additionally receives the
+        cost fields documented in feature 001.
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        categoryId: { type: integer, format: int64 }
+        category: { type: string }
+        brandId: { type: integer, format: int64, nullable: true }
+        brand: { type: string, nullable: true }
+        brandIsLocal:
+          type: boolean
+          description: |
+            **New.** Whether this product's brand is marked local. False for an unbranded product.
+            Not cost data, so it is sent to Staff.
+        model: { type: string, nullable: true }
+        barcode: { type: string, nullable: true }
+        salePrice: { type: number, format: double }
+        quantityOnHand: { type: integer }
+        isLowStock: { type: boolean }
+        isActive: { type: boolean }
