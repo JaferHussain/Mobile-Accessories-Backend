@@ -34,4 +34,4 @@ CREATE TABLE stock_movements (
     CONSTRAINT ck_stock_movements_change_non_zero CHECK (change_qty <> 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;

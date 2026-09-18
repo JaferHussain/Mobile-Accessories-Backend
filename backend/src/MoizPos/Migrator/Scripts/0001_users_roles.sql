@@ -16,7 +16,7 @@ CREATE TABLE users (
     UNIQUE KEY uq_users_username (username)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;
 
 
 -- Refresh tokens are persisted (rather than left stateless) so a departed employee can be
@@ -39,4 +39,4 @@ CREATE TABLE refresh_tokens (
         ON DELETE CASCADE
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;

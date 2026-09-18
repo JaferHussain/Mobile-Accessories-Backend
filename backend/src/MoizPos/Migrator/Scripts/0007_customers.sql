@@ -23,4 +23,4 @@ CREATE TABLE customers (
     KEY ix_customers_balance (is_active, outstanding_balance)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;

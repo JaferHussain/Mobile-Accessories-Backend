@@ -46,7 +46,7 @@ CREATE TABLE invoices (
     CONSTRAINT ck_invoices_discount_non_negative CHECK (order_discount >= 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;
 
 
 CREATE TABLE invoice_items (
@@ -83,4 +83,4 @@ CREATE TABLE invoice_items (
     CONSTRAINT ck_invoice_items_discount_non_negative CHECK (line_discount >= 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;

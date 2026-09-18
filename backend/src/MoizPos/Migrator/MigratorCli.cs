@@ -66,18 +66,38 @@ internal static class MigratorCli
         }
     }
 
-    private static IConfiguration BuildConfiguration(string[] args) =>
-        new ConfigurationBuilder()
+    private static IConfiguration BuildConfiguration(string[] args)
+    {
+        // The environment-specific file matters: on the shop machine the real connection string
+        // lives in appsettings.Production.json, and a migrator that read only appsettings.json
+        // would quietly target whatever the developer's user-secrets point at — which is how a
+        // migration meant for the server gets applied to a laptop instead.
+        var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+                          ?? Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
+                          ?? "Production";
+
+        var builder = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: true)
-            .AddUserSecrets(Assembly.GetExecutingAssembly(), optional: true)
+            .AddJsonFile($"appsettings.{environment}.json", optional: true);
+
+        // User-secrets are a developer convenience and must not override a file that was placed
+        // on a server on purpose, so they are added only outside Production.
+        if (!environment.Equals("Production", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.AddUserSecrets(Assembly.GetExecutingAssembly(), optional: true);
+        }
+
+        return builder
             .AddEnvironmentVariables("MOIZPOS_")
+            .AddEnvironmentVariables()
             .AddCommandLine(args, new Dictionary<string, string>
             {
                 ["--connection"] = "Connection",
                 ["--target"] = "Target",
             })
             .Build();
+    }
 
     private static UpgradeEngine BuildEngine(string connectionString) =>
         DeployChanges.To

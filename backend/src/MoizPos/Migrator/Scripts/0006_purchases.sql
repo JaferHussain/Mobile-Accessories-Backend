@@ -39,7 +39,7 @@ CREATE TABLE purchases (
     CONSTRAINT ck_purchases_returned_within_quantity CHECK (returned_qty >= 0 AND returned_qty <= quantity)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;
 
 
 CREATE TABLE supplier_payments (
@@ -66,4 +66,4 @@ CREATE TABLE supplier_payments (
     CONSTRAINT ck_supplier_payments_amount_positive CHECK (amount > 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;

@@ -34,7 +34,7 @@ CREATE TABLE customer_payments (
     CONSTRAINT ck_customer_payments_amount_positive CHECK (amount > 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;
 
 
 CREATE TABLE ledger_entries (
@@ -64,4 +64,4 @@ CREATE TABLE ledger_entries (
     CONSTRAINT ck_ledger_amounts_non_negative CHECK (bill_amount >= 0 AND paid_amount >= 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;

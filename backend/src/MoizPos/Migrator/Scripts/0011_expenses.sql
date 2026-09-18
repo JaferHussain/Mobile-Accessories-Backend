@@ -13,7 +13,7 @@ CREATE TABLE expense_categories (
     UNIQUE KEY uq_expense_categories_name (name)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;
 
 
 -- The list the spec names, seeded once. It stays extensible — the owner can add more.
@@ -48,4 +48,4 @@ CREATE TABLE expenses (
     CONSTRAINT ck_expenses_amount_positive CHECK (amount > 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;

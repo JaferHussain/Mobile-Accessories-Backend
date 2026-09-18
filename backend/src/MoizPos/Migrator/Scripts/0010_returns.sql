@@ -32,7 +32,7 @@ CREATE TABLE sale_returns (
     CONSTRAINT ck_sale_returns_refund_non_negative CHECK (refund_due >= 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;
 
 
 CREATE TABLE sale_return_items (
@@ -60,7 +60,7 @@ CREATE TABLE sale_return_items (
     CONSTRAINT ck_sale_return_items_quantity_positive CHECK (quantity > 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;
 
 
 CREATE TABLE purchase_returns (
@@ -95,4 +95,4 @@ CREATE TABLE purchase_returns (
     CONSTRAINT ck_purchase_returns_quantity_positive CHECK (quantity > 0)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_0900_ai_ci;
+  COLLATE = utf8mb4_unicode_ci;
