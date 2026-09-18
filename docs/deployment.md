@@ -38,14 +38,8 @@ read and write these two schemas and nothing else — it cannot drop databases o
 
 ### 3. Configure secrets
 
-Never in a committed file. On the server, use environment variables:
-
-```bash
-ConnectionStrings__Default="Server=localhost;Database=moizpos;Uid=moizpos_app;Pwd=<password>;"
-Jwt__Key="<at least 32 random characters — generate, do not invent>"
-```
-
-In development, use user-secrets instead:
+On the shop machine these go directly in `appsettings.Production.json`, which is gitignored and
+therefore never pushed. See **Settings** below. In development, use user-secrets instead:
 
 ```bash
 dotnet user-secrets set "ConnectionStrings:Default" "..." --project backend/src/MoizPos
@@ -89,6 +83,18 @@ Three files, read in order — later ones override earlier:
 | `appsettings.Development.json` | `ASPNETCORE_ENVIRONMENT=Development` |
 | `appsettings.Production.json` | `ASPNETCORE_ENVIRONMENT=Production` — **the shop machine** |
 
+`appsettings.Production.json` holds the shop's database password and token signing key, so it is
+listed in `.gitignore` and **never reaches the GitHub repository**. A committed
+`appsettings.Production.example.json` sits beside it as the template:
+
+```bash
+cd backend/src/MoizPos
+copy appsettings.Production.example.json appsettings.Production.json
+```
+
+Because that file is not in source control, cloning the repo does not back it up. Keep a copy
+wherever the shop keeps its other records.
+
 Set the environment before starting the API on the shop machine:
 
 ```bash
@@ -122,14 +128,31 @@ underscore).
    there is an address reachable from outside, the share button explains itself instead of sending
    a link that goes nowhere.
 
-### Secrets are not in any of those files
+### The connection string and signing key
+
+Both live **in `appsettings.Production.json` itself** — there are no environment variables to
+remember on the shop machine. Setting `ASPNETCORE_ENVIRONMENT=Production` is the only thing the
+machine needs:
 
 ```bash
-setx ConnectionStrings__Default "Server=localhost;Database=moizpos;Uid=moizpos_app;Pwd=<password>;" /M
-setx Jwt__Key "<at least 32 random characters>" /M
+setx ASPNETCORE_ENVIRONMENT Production /M
 ```
 
-The API refuses to start if `Jwt:Key` is missing or too short, rather than running insecurely.
+```jsonc
+"ConnectionStrings": { "Default": "Server=localhost;Port=3306;Database=moizpos;Uid=...;Pwd=...;AllowUserVariables=True;" },
+"Jwt": { "Key": "<64 random characters>", ... }
+```
+
+This is safe *because that file is gitignored*. If it ever stops being ignored, the password and
+signing key go into the GitHub repository's history permanently — removing them later does not
+remove them from history. Check with `git check-ignore -v backend/src/MoizPos/appsettings.Production.json`
+before committing anything under that folder.
+
+The API refuses to start if `Jwt:Key` is missing or shorter than 32 characters, rather than
+running insecurely. Changing the key signs everyone out — which is exactly what to do if it leaks.
+
+Any of these can still be overridden by an environment variable (`Section__Key`) if a particular
+machine ever needs a different value, but nothing requires it.
 
 ### Full reference
 
