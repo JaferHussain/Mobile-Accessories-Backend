@@ -21,6 +21,20 @@ Removed sections: none
 Deferred items: none.
 
 ---
+Version change: 1.0.1 → 1.1.0 (MINOR)
+Rationale: Principle II gains an explicit statement of how the layering is enforced. The backend
+was collapsed from five projects into one on 2026-09-19 at the owner's request, which removed the
+project references that had enforced the layers implicitly. The layering RULE is unchanged and
+undiminished; what changed is the mechanism, which is now LayeringTests in the architecture test
+project. MINOR rather than PATCH because guidance was materially expanded, and MINOR rather than
+MAJOR because no principle was removed or redefined — a change that weakened the rule would have
+been refused.
+
+Migration note: none required for existing code. The single project keeps the same namespaces, so
+no source file changed. `dotnet run --project backend/src/MoizPos.Migrator` becomes
+`dotnet run --project backend/src/MoizPos -- migrate`.
+
+---
 Version change: 1.0.0 → 1.0.1 (PATCH)
 Rationale: clarification only. The deferred TODO(GUIDANCE_FILE) is resolved — CLAUDE.md now
 exists at the repository root and Governance references it. No principle was added, removed or
@@ -50,7 +64,18 @@ prohibited. MySQL 8 is the database. Request validation MUST use FluentValidatio
 MUST use JWT, and role-based authorization MUST be enforced on every endpoint — never by hiding
 controls in the interface alone.
 
-Rationale: A single, explicitly bounded data-access approach keeps the money-handling SQL
+The dependency direction is fixed: Domain depends on nothing, Application on Domain,
+Infrastructure on Application, and the Api host on all of them. **This MUST be enforced
+automatically, and a build that cannot fail on a violation does not satisfy this principle.** The
+project layout is free to change — one project or several — but whichever layout is chosen MUST
+carry an enforcement mechanism with it. As of 2026-09-19 the backend is a single project and the
+mechanism is `LayeringTests`, which reads each file's namespace and using directives; before that
+it was project references. Relaxing the rule to suit a layout is not permitted; the layout gives
+way instead.
+
+Rationale: Enforcement is the whole point — a layering rule nobody can break is architecture, and
+one held up only by good intentions is a preference. A single, explicitly bounded data-access
+approach keeps the money-handling SQL
 visible and reviewable. Authorization enforced at the endpoint is the only form that survives a
 caller who bypasses the UI.
 
@@ -147,4 +172,4 @@ and stock mutations transactional, and does not expose cost or profit data to St
 development guidance lives in [CLAUDE.md](../../CLAUDE.md) at the repository root, which records
 the practical rules and the specific traps that have already caused defects in this codebase.
 
-**Version**: 1.0.1 | **Ratified**: 2026-09-09 | **Last Amended**: 2026-09-10
+**Version**: 1.1.0 | **Ratified**: 2026-09-09 | **Last Amended**: 2026-09-19

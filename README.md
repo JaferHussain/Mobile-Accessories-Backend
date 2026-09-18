@@ -8,11 +8,13 @@ Danwran Lodhran** — a mobile accessories retail shop.
 ```
 backend/          ASP.NET Core 8 Web API (Controller → Service → Repository, Dapper, MySQL 8)
   src/
-    MoizPos.Domain/          entities, enums, domain errors — depends on nothing
-    MoizPos.Application/     services, DTOs, validators, pure calculators
-    MoizPos.Infrastructure/  Dapper repositories, PDF, backup, clock
-    MoizPos.Api/             controllers, middleware, auth policies
-    MoizPos.Migrator/        DbUp host + numbered SQL scripts
+    MoizPos/                 one project, one assembly
+      Domain/                entities, enums, domain errors — depends on nothing
+      Application/           services, DTOs, validators, pure calculators
+      Infrastructure/        Dapper repositories, PDF, backup, clock
+      Api/                   controllers, middleware, auth policies
+      Migrator/              DbUp runner + numbered SQL scripts
+      Program.cs             the host, and `migrate` as a command
   tests/
     MoizPos.UnitTests/         calculators, services, validators
     MoizPos.IntegrationTests/  endpoints against a disposable MySQL schema
@@ -46,15 +48,15 @@ mysql -u root -p -e "CREATE DATABASE moizpos CHARACTER SET utf8mb4 COLLATE utf8m
 mysql -u root -p -e "CREATE DATABASE moizpos_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
 
 # secrets (never committed)
-cd backend/src/MoizPos.Api
+cd backend/src/MoizPos
 dotnet user-secrets set "ConnectionStrings:Default" "Server=localhost;Database=moizpos;Uid=root;Pwd=<password>;"
 dotnet user-secrets set "Jwt:Key" "<at least 32 random characters>"
 
 # schema
-dotnet run --project backend/src/MoizPos.Migrator
+dotnet run --project backend/src/MoizPos -- migrate
 
 # run
-dotnet run --project backend/src/MoizPos.Api    # http://localhost:5080
+dotnet run --project backend/src/MoizPos        # http://localhost:5080
 cd frontend && npm install && npm run dev        # http://localhost:5173
 ```
 

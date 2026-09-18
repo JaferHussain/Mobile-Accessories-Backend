@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using MoizPos.Api.Authorization;
+using MoizPos.Migrator;
 using MoizPos.Api.Controllers;
 using MoizPos.Api.Middleware;
 using MoizPos.Application.Abstractions;
@@ -28,6 +29,14 @@ using Serilog;
 
 // QuestPDF Community licence: free below USD 1M annual revenue (research.md R3).
 QuestPDF.Settings.License = LicenseType.Community;
+
+// The database migrator lives in this same project (Constitution: schema changes only ever reach
+// a database through it). Reached as `dotnet run --project backend/src/MoizPos -- migrate`, it
+// applies the scripts and exits without ever starting the web host.
+if (args.Length > 0 && args[0].Equals("migrate", StringComparison.OrdinalIgnoreCase))
+{
+    return MigratorCli.Run(args[1..]);
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -286,6 +295,8 @@ await using (var scope = app.Services.CreateAsyncScope())
 }
 
 app.Run();
+
+return 0;
 
 /// <summary>Exposed so integration tests can host the API with WebApplicationFactory.</summary>
 public partial class Program;

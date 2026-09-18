@@ -13,18 +13,23 @@ namespace MoizPos.Migrator;
 /// <c>schema_versions</c> table, so running it repeatedly is safe — already-applied scripts are
 /// skipped.
 ///
+/// Runs inside the single MoizPos project rather than as its own executable, reached by passing
+/// <c>migrate</c> as the first argument. That keeps one assembly and one configuration source —
+/// the migrator reads the same appsettings and user-secrets the API does, so the connection string
+/// is defined once.
+///
 /// Usage:
-///   dotnet run --project backend/src/MoizPos.Migrator
-///   dotnet run --project backend/src/MoizPos.Migrator -- --target Test
-///   dotnet run --project backend/src/MoizPos.Migrator -- --connection "Server=...;Database=...;"
-///   dotnet run --project backend/src/MoizPos.Migrator -- --whatif
+///   dotnet run --project backend/src/MoizPos -- migrate
+///   dotnet run --project backend/src/MoizPos -- migrate --target Test
+///   dotnet run --project backend/src/MoizPos -- migrate --connection "Server=...;Database=...;"
+///   dotnet run --project backend/src/MoizPos -- migrate --whatif
 /// </summary>
-internal static class Program
+internal static class MigratorCli
 {
     private const int Success = 0;
     private const int Failure = 1;
 
-    private static int Main(string[] args)
+    public static int Run(string[] args)
     {
         try
         {

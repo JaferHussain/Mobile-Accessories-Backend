@@ -15,15 +15,20 @@ backend/   ASP.NET Core 8 · Dapper · MySQL 8        frontend/  React 18 · Typ
 specs/     the specification, plan and task list    docs/      deployment notes
 ```
 
+The backend is **one project**, `backend/src/MoizPos`, holding every layer in its own folder —
+`Domain/`, `Application/`, `Infrastructure/`, `Api/`, `Migrator/` — plus one test project per kind
+of test. Folders map to the namespaces they always had, so `MoizPos.Domain.Entities` is
+`Domain/Entities`.
+
 ## Commands
 
 ```bash
 # database (once)
 mysql -u root -p < docs/create-databases.sql
-dotnet run --project backend/src/MoizPos.Migrator
+dotnet run --project backend/src/MoizPos -- migrate
 
 # run
-dotnet run --project backend/src/MoizPos.Api      # http://localhost:5120
+dotnet run --project backend/src/MoizPos           # http://localhost:5080
 cd frontend && npm run dev                         # http://localhost:5173
 
 # test — both must pass before anything is merged
@@ -160,6 +165,7 @@ Each of these caused a real bug during the build.
 | Deciding "is this a credit sale?" from the request | The client controls `amountPaid` and `paymentMethod`, so the rule is evadable | Read `totals.AmountRemaining` after the server recomputes, never the request |
 | Sending a search the server now refuses | A one-letter search returns 400; the POS surfaced it as an error at the counter | `PosPage` treats `VALIDATION_FAILED` from search as "no product found"; `ProductsPage` shows a hint and doesn't send it |
 | Selecting `products.category` directly | The column no longer exists — it is `category_id`, joined to `categories` | Join `categories c ON c.id = p.category_id` and select `c.name` |
+| Adding a folder outside the five layers | It is silently unchecked by the layering tests | `Every_source_file_sits_in_a_known_layer` fails until you add the layer to `LayeringTests.Allowed` and say what it may depend on |
 | Two cart lines for one product | Each checks stock against the same locked row and can oversell | `InvoiceService` refuses duplicates; the POS merges them |
 
 ## Non-negotiables
@@ -176,16 +182,23 @@ Each of these caused a real bug during the build.
 - **TDD.** A failing test comes first. A phase is done only when unit tests pass, integration
   tests pass, and nothing previously green broke.
 - **Schema changes go through DbUp**, as a new numbered script in
-  `backend/src/MoizPos.Migrator/Scripts/`. Never edit an applied script; never hand-edit a
+  `backend/src/MoizPos/Migrator/Scripts/`. Never edit an applied script; never hand-edit a
   shared database.
 
 ## Layering
 
 `Domain` → nothing. `Application` → `Domain`. `Infrastructure` → `Application`. `Api` → both.
-Enforced by project references, so a repository cannot reach a controller and a service cannot
-open a connection. **If you need SQL inside a service, put it behind an interface in
-`Application/Abstractions` and implement it in `Infrastructure`** — that is what the
-`*WriteRepository` types are.
+
+**Enforced by `LayeringTests`, not by the compiler.** The backend was five projects until
+2026-09-19, and project references made these rules impossible to break. It is now one project, so
+`LayeringTests` reads every file's namespace and its `using` directives and fails the build on a
+violation instead. The guard is verified: adding `using MoizPos.Application.Services;` to a domain
+entity reddens two tests.
+
+**If you need SQL inside a service, put it behind an interface in `Application/Abstractions` and
+implement it in `Infrastructure`** — that is what the `*WriteRepository` types are, and
+`A_service_never_opens_its_own_database_connection` enforces it by refusing `using Dapper` or
+`using MySqlConnector` anywhere under `Application/`.
 
 ## Time
 

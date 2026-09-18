@@ -25,8 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\MoizPos.Application\MoizPos.Application.csproj" />
-    <ProjectReference Include="..\..\src\MoizPos.Infrastructure\MoizPos.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\MoizPos\MoizPos.csproj" />
   </ItemGroup>
 
 </Project>

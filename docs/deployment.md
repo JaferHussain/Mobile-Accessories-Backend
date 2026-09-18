@@ -48,7 +48,7 @@ Jwt__Key="<at least 32 random characters — generate, do not invent>"
 In development, use user-secrets instead:
 
 ```bash
-dotnet user-secrets set "ConnectionStrings:Default" "..." --project backend/src/MoizPos.Api
+dotnet user-secrets set "ConnectionStrings:Default" "..." --project backend/src/MoizPos
 ```
 
 If `Jwt:Key` is missing or too short the API refuses to start, rather than running insecurely.
@@ -56,7 +56,7 @@ If `Jwt:Key` is missing or too short the API refuses to start, rather than runni
 ### 4. Create the tables
 
 ```bash
-dotnet run --project backend/src/MoizPos.Migrator
+dotnet run --project backend/src/MoizPos -- migrate
 ```
 
 Safe to re-run — already-applied scripts are skipped. Run this after **every** update; it is how
@@ -65,7 +65,7 @@ schema changes reach the database.
 ### 5. Start it
 
 ```bash
-dotnet run --project backend/src/MoizPos.Api
+dotnet run --project backend/src/MoizPos
 cd frontend && npm run build      # produces frontend/dist for your web server
 ```
 
@@ -145,7 +145,7 @@ back before it will proceed.
 git pull
 cd backend  && dotnet test          # both suites must be green before deploying
 cd frontend && npm run test && npm run build
-dotnet run --project backend/src/MoizPos.Migrator
+dotnet run --project backend/src/MoizPos -- migrate
 # restart the API
 ```
 

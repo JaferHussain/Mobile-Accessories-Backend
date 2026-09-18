@@ -22,7 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\MoizPos.Api\MoizPos.Api.csproj" />
+    <ProjectReference Include="..\..\src\MoizPos\MoizPos.csproj" />
   </ItemGroup>
 
 </Project>
