@@ -44,6 +44,11 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         var settings = new Dictionary<string, string?>
         {
             ["ConnectionStrings:Default"] = _database.ConnectionString,
+
+            // Keeps a developer's appsettings.{Environment}.local.json out of the test host.
+            // That file is added after this one and would otherwise decide which database the
+            // suite writes to — including a live server.
+            ["SkipMachineLocalSettings"] = "true",
             ["Jwt:Key"] = "integration-test-signing-key-at-least-32-chars",
             ["Jwt:Issuer"] = "MoizPos",
             ["Jwt:Audience"] = "MoizPosCounter",

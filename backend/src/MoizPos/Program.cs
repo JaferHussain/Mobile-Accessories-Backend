@@ -40,6 +40,26 @@ if (args.Length > 0 && args[0].Equals("migrate", StringComparison.OrdinalIgnoreC
 
 var builder = WebApplication.CreateBuilder(args);
 
+// A per-machine settings file. Added last, so it overrides everything before it — including
+// user-secrets — which makes it the single place to look when asking "what is this machine
+// actually using?". It is gitignored, which is the point: THIS machine's connection string lives
+// in the project as an ordinary settings file, visible and editable, but never pushed.
+// Optional — nothing breaks if it does not exist.
+//
+// The integration test host MUST opt out via SkipMachineLocalSettings. Its own connection string
+// arrives through ConfigureAppConfiguration, which is applied AFTER this file, and the string is
+// read a few lines below to build the connection factory — so without the opt-out this file wins
+// and the whole suite runs against whatever database this machine happens to name. That is not
+// hypothetical: it pointed the suite at the live server once, and 201 tests failed at login
+// because their users existed in the test database instead.
+if (!builder.Configuration.GetValue<bool>("SkipMachineLocalSettings"))
+{
+    builder.Configuration.AddJsonFile(
+        $"appsettings.{builder.Environment.EnvironmentName}.local.json",
+        optional: true,
+        reloadOnChange: true);
+}
+
 builder.Host.UseSerilog((context, configuration) =>
     configuration.ReadFrom.Configuration(context.Configuration));
 

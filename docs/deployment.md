@@ -82,6 +82,7 @@ Three files, read in order — later ones override earlier:
 | `appsettings.json` | always; safe defaults, no secrets |
 | `appsettings.Development.json` | `ASPNETCORE_ENVIRONMENT=Development` |
 | `appsettings.Production.json` | `ASPNETCORE_ENVIRONMENT=Production` — **the shop machine** |
+| `appsettings.{Environment}.local.json` | always, if present — per-machine overrides, gitignored, wins over all of the above |
 
 `appsettings.Production.json` holds the shop's database password and token signing key, so it is
 listed in `.gitignore` and **never reaches the GitHub repository**. A committed

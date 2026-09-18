@@ -28,7 +28,7 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
-appsettings.Development.local.json
+appsettings.*.local.json
 appsettings.Production.json
 secrets.json
 

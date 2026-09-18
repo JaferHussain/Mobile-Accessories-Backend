@@ -36,6 +36,11 @@ cd backend  && dotnet test
 cd frontend && npm run test && npx tsc --noEmit
 ```
 
+Per-machine settings go in `backend/src/MoizPos/appsettings.{Environment}.local.json` — gitignored,
+added last so it overrides everything including user-secrets. It is where this machine's connection
+string belongs. `appsettings.Development.json` is **committed and pushed**, so nothing secret goes
+in it; `appsettings.Production.json` is gitignored and may hold secrets.
+
 Integration tests need MySQL running. They create and drop their own schema in `moizpos_test`
 and refuse to run against a database whose name lacks "test".
 
@@ -166,6 +171,7 @@ Each of these caused a real bug during the build.
 | Sending a search the server now refuses | A one-letter search returns 400; the POS surfaced it as an error at the counter | `PosPage` treats `VALIDATION_FAILED` from search as "no product found"; `ProductsPage` shows a hint and doesn't send it |
 | Selecting `products.category` directly | The column no longer exists — it is `category_id`, joined to `categories` | Join `categories c ON c.id = p.category_id` and select `c.name` |
 | Adding a folder outside the five layers | It is silently unchecked by the layering tests | `Every_source_file_sits_in_a_known_layer` fails until you add the layer to `LayeringTests.Allowed` and say what it may depend on |
+| A config source added in `Program.cs` after `CreateBuilder` | It outranks what the test factory injects, and the connection string is read moments later — so the whole suite silently runs against whatever this machine names, including the live server | `ApiFactory` sets `SkipMachineLocalSettings`; `HostConfigurationTests` asserts the **data layer's own** connection, because `IConfiguration` showed the right database while the repositories held the wrong one |
 | Two cart lines for one product | Each checks stock against the same locked row and can oversell | `InvoiceService` refuses duplicates; the POS merges them |
 
 ## Non-negotiables
