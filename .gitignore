@@ -53,4 +53,7 @@ Thumbs.db
 .idea/
 .vscode/
 !.vscode/extensions.json
+# Build output: the React app is compiled into the API's wwwroot at publish time.
+backend/src/MoizPos/wwwroot/
+# The deployable package.
 deploy/
