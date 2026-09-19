@@ -285,6 +285,29 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseSerilogRequestLogging();
+
+// ---------------------------------------------------------------- the counter app
+//
+// The built React app is served by this same host from wwwroot, so the shop runs on ONE origin:
+// the browser asks the same address for the page and for /api. No CORS to configure, nothing to
+// keep in step between two sites, and one thing to deploy instead of two.
+//
+// BEFORE authentication on purpose. The login page has to be reachable by someone who is not yet
+// logged in, and this API authorises by default — with these after UseAuthorization, every request
+// for the page itself came back 401 and the shop saw a blank screen instead of a login form.
+//
+// Guarded on index.html being present: in development the app is served by Vite, and the test host
+// has no wwwroot. An unconditional fallback would turn a mistyped API path into an HTML page,
+// making a genuine 404 look like a working screen.
+var counterAppIsBundled =
+    File.Exists(Path.Combine(app.Environment.WebRootPath ?? string.Empty, "index.html"));
+
+if (counterAppIsBundled)
+{
+    app.UseDefaultFiles();
+    app.UseStaticFiles();
+}
+
 app.UseCors(CounterCorsPolicy);
 app.UseRateLimiter();
 app.UseAuthentication();
@@ -294,6 +317,19 @@ app.MapControllers();
 app.MapGet("/api/health", () => Results.Ok(ApiResponse<object>.Ok(new { status = "healthy" })))
    .AllowAnonymous()
    .WithName("Health");
+
+if (counterAppIsBundled)
+{
+    // Anything not matched by a controller or /api route is a client-side route (/pos,
+    // /customers, ...), so hand back index.html and let React Router resolve it. Without this,
+    // refreshing the page anywhere but the first screen returns 404.
+    //
+    // AllowAnonymous because the fallback would otherwise inherit this API's authorise-by-default
+    // policy, and an unauthenticated visitor could never reach the login screen.
+    // The regex excludes /api: without it a mistyped API path returns the HTML page with a 200,
+    // and a client bug looks like a working screen instead of the 404 it is.
+    app.MapFallbackToFile("{*path:regex(^(?!api/).*$)}", "index.html").AllowAnonymous();
+}
 
 // ---------------------------------------------------------------- first run
 await using (var scope = app.Services.CreateAsyncScope())

@@ -394,8 +394,22 @@ public sealed class RoleEnforcementTests
         var staff = await ClientAsync(UserRole.Staff);
         var original = staff.DefaultRequestHeaders.Authorization!.Parameter!;
 
-        // Flip the last character of the signature.
-        var tampered = original[..^1] + (original[^1] == 'A' ? 'B' : 'A');
+        // Change the FIRST character of the signature, not the last.
+        //
+        // A JWT HMAC-SHA256 signature is 32 bytes, which is 43 base64url characters — and the last
+        // character carries only 4 meaningful bits. 'A', 'B', 'C' and 'D' all decode to the same
+        // byte, so flipping the last character between 'A' and 'B' leaves the signature BYTE FOR
+        // BYTE IDENTICAL. Whenever a signature happened to end in 'A' or 'B' the token was still
+        // genuinely valid, the API was right to accept it, and this test failed for no reason.
+        // The first character carries a full 6 bits, so changing it always changes the signature.
+        var segments = original.Split('.');
+        segments.Should().HaveCount(3, "a JWT is header.payload.signature");
+
+        var signature = segments[2];
+        segments[2] = (signature[0] == 'A' ? 'B' : 'A') + signature[1..];
+
+        var tampered = string.Join('.', segments);
+        tampered.Should().NotBe(original, "the tampering must actually change the token");
 
         var client = _api.CreateClient();
         client.DefaultRequestHeaders.Authorization =
