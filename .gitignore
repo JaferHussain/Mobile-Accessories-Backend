@@ -29,6 +29,8 @@ pnpm-debug.log*
 .env.*
 !.env.example
 appsettings.*.local.json
+# Holds this machine's database credentials. The repository is public.
+appsettings.Development.json
 appsettings.Production.json
 secrets.json
 

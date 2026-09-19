@@ -36,10 +36,11 @@ cd backend  && dotnet test
 cd frontend && npm run test && npx tsc --noEmit
 ```
 
-Per-machine settings go in `backend/src/MoizPos/appsettings.{Environment}.local.json` — gitignored,
-added last so it overrides everything including user-secrets. It is where this machine's connection
-string belongs. `appsettings.Development.json` is **committed and pushed**, so nothing secret goes
-in it; `appsettings.Production.json` is gitignored and may hold secrets.
+**The GitHub repository is public.** No file holding a credential may be tracked.
+`appsettings.Development.json`, `appsettings.Production.json` and `appsettings.*.local.json` are all
+gitignored and hold this machine's connection strings; `appsettings.Development.example.json` and
+`appsettings.Production.example.json` are the committed templates a fresh clone copies from.
+Only `appsettings.json` — which carries no secrets — is tracked.
 
 Integration tests need MySQL running. They create and drop their own schema in `moizpos_test`
 and refuse to run against a database whose name lacks "test".
