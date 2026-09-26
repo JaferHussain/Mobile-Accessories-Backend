@@ -46,13 +46,17 @@ public sealed class DocumentSharingTests
         var product = await admin.PostAsJsonAsync("/api/products", new
         {
             name = $"Doc {Guid.NewGuid():N}"[..18],
-            categoryId = await _api.EnsureCategoryAsync("Cables"),
+            categoryId = (await _api.EnsureCatalogueAsync()).CategoryId,
+            brandId = (await _api.EnsureCatalogueAsync()).BrandId,
             costPrice = 800m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 1100m,
             quantityOnHand = 10, minStockThreshold = 3,
         });
 
         var productId = (await product.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
             .Data!.GetProperty("id").GetInt64();
+
+        // Prices and stock arrive with the first delivery now, not with the product.
+        await _api.StockProductAsync(productId, quantity: 50, salePrice: 1100m);
 
         var customer = await admin.PostAsJsonAsync("/api/customers", new
         {

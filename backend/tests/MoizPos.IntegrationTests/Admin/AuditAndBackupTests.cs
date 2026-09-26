@@ -106,10 +106,10 @@ public sealed class AuditAndBackupTests
                 """
                 -- Products carry a category foreign key now, so the category has to exist first.
                 INSERT IGNORE INTO categories (name, created_at_utc) VALUES ('Cables', UTC_TIMESTAMP(6));
+                INSERT IGNORE INTO brands (name, is_local, is_active, created_at_utc) VALUES ('TestBrand', FALSE, TRUE, UTC_TIMESTAMP(6));
                 INSERT INTO products
-                    (name, category_id, cost_price, wholesale_price, retail_price, sale_price,
-                     quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
-                VALUES (@name, (SELECT id FROM categories WHERE name = 'Cables'), 0, 0, 0, 1100, 0, 3, TRUE, UTC_TIMESTAMP(6));
+                    (name, category_id, brand_id, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
+                VALUES (@name, (SELECT id FROM categories WHERE name = 'Cables'), (SELECT id FROM brands WHERE name = 'TestBrand'), 0, 0, 1100, 0, 3, TRUE, UTC_TIMESTAMP(6));
                 SELECT LAST_INSERT_ID();
                 """,
                 new { name = $"Aud {Guid.NewGuid():N}"[..18] });
@@ -132,7 +132,7 @@ public sealed class AuditAndBackupTests
 
         await purchases.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         var audit = new AuditRepository(Factory());
@@ -178,7 +178,7 @@ public sealed class AuditAndBackupTests
         // Fails on an unknown product, after the supplier row has been locked.
         var act = async () => await purchases.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = 999_999_999, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = 999_999_999, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await act.Should().ThrowAsync<Exception>();

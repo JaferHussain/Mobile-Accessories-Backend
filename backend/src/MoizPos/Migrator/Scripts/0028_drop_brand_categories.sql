@@ -1,0 +1,23 @@
+-- 0028 — Undo the brand/category link from 0027.
+--
+-- The owner tried "a brand carries a set of categories" and asked for it to be taken out: the
+-- extra setup step earned nothing at this shop's size. Choosing a brand and then choosing a
+-- category from the whole list is fewer decisions than maintaining a per-brand list first.
+--
+-- 0027 is NOT edited — it was applied to the shop's database and an applied script is history.
+-- This is its reversal, recorded as its own step, so the journal reads as what actually happened.
+--
+-- WHAT IS UNDONE
+--   * brand_categories is dropped. It held only configuration — which categories a brand was
+--     said to carry — and nothing reads it to reproduce a past figure, so nothing historical
+--     is lost with it.
+--
+-- WHAT IS DELIBERATELY KEPT
+--   * products.brand_id stays NOT NULL. Every product naming a brand is the owner's own rule,
+--     decided separately from the link: goods with no well-known maker are filed under a brand
+--     created for them rather than left blank. Making it nullable again would re-admit products
+--     with no brand at all, which is the opposite of what the shop asked for.
+--   * brands.is_local stays. Nothing sets it any more, but dropping a column buys nothing and
+--     cannot be undone without another migration.
+
+DROP TABLE IF EXISTS brand_categories;

@@ -83,3 +83,18 @@ public enum ReportGrouping
     Month = 3,
     Year = 4,
 }
+
+/// <summary>
+/// Where an expense's money came from.
+///
+/// <para>Only <see cref="Till"/> leaves the cash drawer, so only it is subtracted at day close.
+/// Money paid from the bank never entered the drawer and must not make it look short.</para>
+/// </summary>
+public enum PaymentSource
+{
+    /// <summary>Notes taken out of the drawer.</summary>
+    Till = 1,
+
+    /// <summary>Paid from the shop's account; the drawer never saw it.</summary>
+    Bank = 2,
+}

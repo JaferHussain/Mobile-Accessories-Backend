@@ -5,6 +5,7 @@ using MoizPos.Api.Authorization;
 using MoizPos.Application.Abstractions;
 using MoizPos.Application.Contracts.Common;
 using MoizPos.Application.Time;
+using MoizPos.Domain.Enums;
 using MoizPos.Domain.Errors;
 
 namespace MoizPos.Api.Controllers;
@@ -16,6 +17,12 @@ public sealed record CreateExpenseRequest
     public decimal Amount { get; init; }
 
     public DateTime ExpenseDate { get; init; }
+
+    /// <summary>
+    /// Where the money came from. Required: an expense with no source is invisible to the day's
+    /// drawer count, so the drawer reads short by exactly the amount that legitimately left it.
+    /// </summary>
+    public PaymentSource? PaymentSource { get; init; }
 
     public string? Note { get; init; }
 }
@@ -36,6 +43,12 @@ public sealed class CreateExpenseValidator : AbstractValidator<CreateExpenseRequ
 
         RuleFor(x => x.ExpenseDate)
             .NotEmpty().WithMessage("An expense date is required.");
+
+        // Enforced here, not only by the dropdown. A required field on a form is a convenience
+        // for whoever uses the form; it is not a rule, because nothing makes a caller use it.
+        RuleFor(x => x.PaymentSource)
+            .NotNull().WithMessage("Say whether this was paid from the till or the bank.")
+            .IsInEnum().WithMessage("An expense is paid from either the till or the bank.");
 
         RuleFor(x => x.Note).MaximumLength(255);
     }
@@ -105,6 +118,7 @@ public sealed class ExpensesController : ControllerBase
             request.CategoryId,
             request.Amount,
             request.ExpenseDate,
+            request.PaymentSource!.Value,
             request.Note,
             CurrentUser.Id(User),
             cancellationToken);

@@ -32,6 +32,12 @@ public sealed record CreateInvoiceRequest
 
     public PaymentMethod PaymentMethod { get; init; } = PaymentMethod.Cash;
 
+    /// <summary>The customer's account, where a non-cash payment came from. Optional.</summary>
+    public string? PaymentAccountNumber { get; init; }
+
+    /// <summary>Their reference for that transfer. Optional.</summary>
+    public string? PaymentTransactionId { get; init; }
+
     /// <summary>
     /// Counter sale or bulk sale. Retail unless the salesman says otherwise, because the counter
     /// is the normal case and an unset field must not silently reclassify the day's takings.
@@ -162,11 +168,23 @@ public sealed class InvoiceService : IInvoiceService
             request.OrderDiscount,
             request.AmountPaid);
 
-        // Stock check across every line before writing anything: a sale is all or nothing, so a
-        // shortage on line three must not leave lines one and two deducted.
+        // Stock and price checked across every line before writing anything: a sale is all or
+        // nothing, so a problem on line three must not leave lines one and two deducted.
         foreach (var item in request.Items)
         {
             var product = byId[item.ProductId];
+
+            // A product that has never been stocked has no selling price, and the counter would
+            // quote zero for it. Refused here rather than trusted from the request, because the
+            // client supplies the unit price and would happily sell an unpriced product at
+            // whatever it last had in memory. Read from the LOCKED row, so a purchase committing
+            // alongside this sale cannot make the answer stale.
+            if (product.RetailPrice <= 0m)
+            {
+                throw new BusinessRuleViolationException(
+                    $"'{product.Name}' has no selling price yet. Record a purchase for it first — " +
+                    "that is what sets its price and puts it in stock.");
+            }
 
             if (product.QuantityOnHand < item.Quantity)
             {
@@ -193,13 +211,31 @@ public sealed class InvoiceService : IInvoiceService
             throw new CreditRequiresAdminException(totals.AmountRemaining);
         }
 
+        // A cash sale carries no payment reference. Money counted into the drawer came from no
+        // account, so a "reference" on it would be evidence of nothing — and allowing one would
+        // quietly invite references on sales that never had a transfer. Same rule, and the same
+        // reasoning, as the proof screenshot (feature 008).
+        //
+        // Checked here, before the first write, so a refusal leaves no invoice and no stock
+        // movement rather than a sale with a nonsense reference attached.
+        if (request.PaymentMethod == PaymentMethod.Cash &&
+            (!string.IsNullOrWhiteSpace(request.PaymentAccountNumber) ||
+             !string.IsNullOrWhiteSpace(request.PaymentTransactionId)))
+        {
+            throw new BusinessRuleViolationException(
+                "A cash sale cannot carry a payment account or transaction reference.");
+        }
+
         var invoiceNumber = await _invoices.NextInvoiceNumberAsync(uow, nowUtc.Year, cancellationToken);
 
         var invoiceId = await _invoices.InsertInvoiceAsync(
             uow, invoiceNumber, customerId, nowUtc, request.SaleType,
             totals.Subtotal, request.OrderDiscount, totals.Total,
             totals.AmountPaid, totals.AmountRemaining,
-            request.PaymentMethod, request.IdempotencyKey, userId, nowUtc, cancellationToken);
+            request.PaymentMethod,
+            Trimmed(request.PaymentAccountNumber),
+            Trimmed(request.PaymentTransactionId),
+            request.IdempotencyKey, userId, nowUtc, cancellationToken);
 
         // Each line snapshots the product's CURRENT cost. Under the shop's latest-cost rule a
         // later purchase overwrites products.cost_price; without this snapshot every historical
@@ -275,6 +311,13 @@ public sealed class InvoiceService : IInvoiceService
             invoiceId, invoiceNumber, totals.Subtotal, totals.TotalDiscount, totals.Total,
             totals.AmountPaid, totals.AmountRemaining, customerId, customerBalance);
     }
+
+    /// <summary>
+    /// Blank and whitespace both mean "not given". Stored as NULL rather than an empty string so
+    /// "no reference" is one fact in the column, not two that every later query must handle.
+    /// </summary>
+    private static string? Trimmed(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private async Task<long?> QuickCreateCustomerAsync(
         CreateInvoiceRequest request,

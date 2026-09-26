@@ -10,21 +10,30 @@ namespace MoizPos.Infrastructure.Repositories;
 public sealed class ProductRepository : IProductRepository
 {
     /// <summary>
-    /// The price to quote. A wholesale sale is quoted wholesale_price; everything else gets the
-    /// counter price. Resolved in SQL so the caller is handed one price — the one that applies —
+    /// The price to quote. A wholesale sale is quoted wholesale_price; a walk-in is quoted
+    /// retail_price. Resolved in SQL so the caller is handed one price — the one that applies —
     /// rather than both (FR-040: a Staff DTO may not carry a wholesale figure).
     ///
-    /// <para>A product with no wholesale price set falls back to the counter price, so switching
+    /// <para>A product with no wholesale price set falls back to the retail price, so switching
     /// to wholesale can never quote zero for stock the owner has not priced for bulk yet.</para>
+    ///
+    /// <para>The shop has exactly three prices — cost, wholesale and retail. There was a fourth
+    /// column, <c>sale_price</c>, which is what this used to read; migration 0029 removed it,
+    /// because two columns for one price cannot be kept honest and the one that had to go was
+    /// the one whose name did not say what it held.</para>
     /// </summary>
     private static string PriceColumn(SaleType saleType) =>
         saleType == SaleType.Wholesale
-            ? "CASE WHEN p.wholesale_price > 0 THEN p.wholesale_price ELSE p.sale_price END"
-            : "p.sale_price";
+            ? "CASE WHEN p.wholesale_price > 0 THEN p.wholesale_price ELSE p.retail_price END"
+            : "p.retail_price";
 
     /// <summary>
-    /// The projected columns. SalePrice is whichever price applies to the sale being made, so a
-    /// caller receives one price rather than a menu of them.
+    /// The projected columns.
+    ///
+    /// <para><b>SalePrice is not a column.</b> It is whichever of the three stored prices applies
+    /// to the sale being made, computed per request, so a caller receives one price rather than a
+    /// menu of them. RetailPrice and WholesalePrice beside it ARE stored, and reach the Admin DTO
+    /// only.</para>
     /// </summary>
     private static string SelectColumns(SaleType saleType) => $"""
         p.id                  AS Id,
@@ -204,11 +213,11 @@ public sealed class ProductRepository : IProductRepository
             """
             INSERT INTO products
                 (name, category_id, brand_id, model, barcode, image_path, cost_price, wholesale_price,
-                 retail_price, sale_price, quantity_on_hand, min_stock_threshold, supplier_id,
+                 retail_price, quantity_on_hand, min_stock_threshold, supplier_id,
                  is_active, created_at_utc)
             VALUES
                 (@Name, @CategoryId, @BrandId, @Model, @Barcode, @ImagePath, @CostPrice, @WholesalePrice,
-                 @RetailPrice, @SalePrice, @QuantityOnHand, @MinStockThreshold, @SupplierId,
+                 @RetailPrice, @QuantityOnHand, @MinStockThreshold, @SupplierId,
                  TRUE, UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
@@ -230,9 +239,8 @@ public sealed class ProductRepository : IProductRepository
                 brand_id = @BrandId,
                 model = @Model,
                 barcode = @Barcode,
-                wholesale_price = @WholesalePrice,
-                retail_price = @RetailPrice,
-                sale_price = @SalePrice,
+                -- No prices here. They are the purchase's to set, so that changing what a
+                -- product IS can never quietly change what it is worth.
                 min_stock_threshold = @MinStockThreshold,
                 supplier_id = @SupplierId,
                 updated_at_utc = UTC_TIMESTAMP(6)

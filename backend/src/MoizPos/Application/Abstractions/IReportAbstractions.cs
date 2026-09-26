@@ -24,6 +24,12 @@ public sealed record ExpenseRow
 
     public DateTime ExpenseDateUtc { get; init; }
 
+    /// <summary>
+    /// Where the money came from. Null only on rows recorded before this was asked for; every
+    /// expense saved since states one, and only Till leaves the cash drawer.
+    /// </summary>
+    public PaymentSource? PaymentSource { get; init; }
+
     public string? Note { get; init; }
 }
 
@@ -38,7 +44,8 @@ public interface IExpenseRepository
         CancellationToken cancellationToken = default);
 
     Task<long> CreateAsync(
-        long categoryId, decimal amount, DateTime expenseDateUtc, string? note, long userId,
+        long categoryId, decimal amount, DateTime expenseDateUtc, PaymentSource paymentSource,
+        string? note, long userId,
         CancellationToken cancellationToken = default);
 
     Task DeleteAsync(long id, CancellationToken cancellationToken = default);
@@ -149,6 +156,34 @@ public sealed record StockMovementReportRow
 /// <summary>
 /// One side of the retail/wholesale split for a period (FR-014a).
 /// </summary>
+/// <summary>
+/// One salesman's day.
+///
+/// <para>Pairs with the day's drawer count: a short is only answerable once you know who was
+/// selling. Carries no cost and no profit - this is about accountability for cash and discounts,
+/// not about margin.</para>
+/// </summary>
+public sealed record UserSalesRow
+{
+    public long UserId { get; init; }
+
+    public string UserName { get; init; } = string.Empty;
+
+    public int InvoiceCount { get; init; }
+
+    /// <summary>Net of returns - what the sales are worth today.</summary>
+    public decimal TotalSales { get; init; }
+
+    /// <summary>What they actually took at the counter.</summary>
+    public decimal CashTaken { get; init; }
+
+    /// <summary>What they let leave on credit.</summary>
+    public decimal CreditGiven { get; init; }
+
+    /// <summary>Line discounts plus whole-bill discounts - what they gave away.</summary>
+    public decimal DiscountGiven { get; init; }
+}
+
 public sealed record SaleTypeTotalsRow
 {
     /// <summary>"Retail" or "Wholesale".</summary>
@@ -194,6 +229,23 @@ public sealed record SaleListRow
     public int ItemCount { get; init; }
 }
 
+/// <summary>
+/// The period's credit, split by how it arose.
+///
+/// <para>Derived from the MONEY, never from <c>payment_method</c>: a sale labelled "Cash" whose
+/// payment fell short is still credit, and the label is the one part a caller controls — the
+/// same reasoning that decides credit authority in InvoiceService.</para>
+/// </summary>
+/// <param name="UdhaarCount">Sales that paid nothing and owe something.</param>
+/// <param name="UdhaarAmount">What those sales left owing — their whole value.</param>
+/// <param name="PartPaidCount">Sales that paid something and still owe something.</param>
+/// <param name="PartPaidRemaining">Only the unpaid remainder of those sales.</param>
+public readonly record struct CreditBreakdown(
+    int UdhaarCount,
+    decimal UdhaarAmount,
+    int PartPaidCount,
+    decimal PartPaidRemaining);
+
 public interface IReportRepository
 {
     /// <summary>
@@ -206,6 +258,24 @@ public interface IReportRepository
     Task<decimal> TotalSalesAsync(DateRangeUtc range, CancellationToken cancellationToken = default);
 
     Task<decimal> TotalPurchasesAsync(DateRangeUtc range, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Value returned by customers in the period. Already netted out of
+    /// <see cref="TotalSalesAsync"/> via <c>invoices.net_amount</c> — this is a separate figure
+    /// so the owner can see how much came back, not just the number it was already folded into.
+    /// </summary>
+    Task<decimal> TotalSaleReturnsAsync(DateRangeUtc range, CancellationToken cancellationToken = default);
+
+    /// <summary>Value the shop sent back to suppliers in the period.</summary>
+    Task<decimal> TotalPurchaseReturnsAsync(DateRangeUtc range, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// How the period's credit broke down: sales taken wholly on udhaar, and what is still
+    /// owed on sales that were part paid. Together they reconstruct <c>CreditSales</c> — this
+    /// explains that figure rather than adding a second one beside it.
+    /// </summary>
+    Task<CreditBreakdown> CreditBreakdownAsync(
+        DateRangeUtc range, CancellationToken cancellationToken = default);
 
     Task<(decimal CashSales, decimal CreditSales)> SalesBySettlementAsync(
         DateRangeUtc range, CancellationToken cancellationToken = default);
@@ -223,6 +293,10 @@ public interface IReportRepository
         DateRangeUtc range, int limit, CancellationToken cancellationToken = default);
 
     /// <summary>The period's takings split into retail and wholesale (FR-014a).</summary>
+    /// <summary>Each salesman's totals for the period, biggest seller first.</summary>
+    Task<IReadOnlyList<UserSalesRow>> SalesByUserAsync(
+        DateRangeUtc range, CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<SaleTypeTotalsRow>> SalesBySaleTypeAsync(
         DateRangeUtc range, CancellationToken cancellationToken = default);
 

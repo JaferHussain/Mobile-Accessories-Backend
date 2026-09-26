@@ -47,17 +47,22 @@ public sealed class ProductFilterTests
     private static string Unique(string prefix) =>
         prefix + new string(Guid.NewGuid().ToString("N").Where(char.IsLetter).Take(6).ToArray());
 
+    /// <summary>
+    /// A plain imported brand, for tests whose subject is something other than the brand. Every
+    /// product needs one since 0027, so "no brand" is no longer an option a test can pass.
+    /// </summary>
+    private Task<long> AnyBrandAsync() => _api.EnsureBrandAsync(Unique("Brand"));
+
     private async Task<long> InsertAsync(
-        string name, long categoryId, long? brandId, decimal salePrice = 1100m, decimal wholesale = 950m)
+        string name, long categoryId, long brandId, decimal salePrice = 1100m, decimal wholesale = 950m)
     {
         await using var connection = await _api.OpenDatabaseAsync();
 
         return await connection.ExecuteScalarAsync<long>(
             """
             INSERT INTO products
-                (name, category_id, brand_id, cost_price, wholesale_price, retail_price, sale_price,
-                 quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
-            VALUES (@name, @categoryId, @brandId, 800, @wholesale, 0, @salePrice, 10, 3, TRUE,
+                (name, category_id, brand_id, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
+            VALUES (@name, @categoryId, @brandId, 800, @wholesale, @salePrice, 10, 3, TRUE,
                     UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
@@ -105,8 +110,10 @@ public sealed class ProductFilterTests
         var chargers = await _api.EnsureCategoryAsync(Unique("Chargers"));
         var cables = await _api.EnsureCategoryAsync(Unique("Cables"));
 
-        var charger = await InsertAsync(Unique("P"), chargers, brandId: null);
-        var cable = await InsertAsync(Unique("P"), cables, brandId: null);
+        var brand = await AnyBrandAsync();
+
+        var charger = await InsertAsync(Unique("P"), chargers, brand);
+        var cable = await InsertAsync(Unique("P"), cables, brand);
 
         var ids = await IdsAsync(admin, $"categoryId={chargers}");
 
@@ -141,8 +148,10 @@ public sealed class ProductFilterTests
         var chargers = await _api.EnsureCategoryAsync(Unique("Chargers"));
         var tag = Unique("zq");
 
-        var fast = await InsertAsync($"Charger 20W Fast {tag}", chargers, brandId: null);
-        var slow = await InsertAsync($"Charger 5W Basic {tag}", chargers, brandId: null);
+        var brand = await AnyBrandAsync();
+
+        var fast = await InsertAsync($"Charger 20W Fast {tag}", chargers, brand);
+        var slow = await InsertAsync($"Charger 5W Basic {tag}", chargers, brand);
 
         var ids = await IdsAsync(admin, $"categoryId={chargers}&search={Uri.EscapeDataString($"fast {tag}")}");
 
@@ -220,17 +229,29 @@ public sealed class ProductFilterTests
     }
 
     [Fact]
-    public async Task An_unbranded_product_is_never_counted_as_local()
+    public async Task A_product_cannot_be_stored_without_a_brand()
     {
-        var admin = await ClientAsync(UserRole.Admin);
         var category = await _api.EnsureCategoryAsync(Unique("Cables"));
-        var unbranded = await InsertAsync(Unique("P"), category, brandId: null);
 
-        // Clarification A: local is a property of a brand. An imported item saved without a brand
-        // would otherwise be misreported as local stock.
-        var ids = await IdsAsync(admin, $"localOnly=true&categoryId={category}");
+        await using var connection = await _api.OpenDatabaseAsync();
 
-        ids.Should().NotContain(unbranded);
+        // Replaces An_unbranded_product_is_never_counted_as_local, which asserted behaviour that
+        // can no longer arise: since 0027 every product carries a brand, and goods with no
+        // well-known maker are filed under the shop's general "Local" brand instead.
+        //
+        // The guarantee that replaces it is stronger — the DATABASE refuses the row, so a product
+        // cannot slip past the brand system through a repository, a script or a fix-up query,
+        // which is exactly how the old unbranded rows arrived.
+        var insert = async () => await connection.ExecuteAsync(
+            """
+            INSERT INTO products
+                (name, category_id, brand_id, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
+            VALUES (@name, @categoryId, NULL, 0, 0, 100, 1, 3, TRUE, UTC_TIMESTAMP(6));
+            """,
+            new { name = Unique("P"), categoryId = category });
+
+        await insert.Should().ThrowAsync<MySqlConnector.MySqlException>(
+            "brand_id is NOT NULL, so the column itself is the guard");
     }
 
     [Fact]
@@ -280,7 +301,6 @@ public sealed class ProductFilterTests
 
         var local = await InsertAsync(Unique("P"), category, faster);
         var imported = await InsertAsync(Unique("P"), category, samsung);
-        var unbranded = await InsertAsync(Unique("P"), category, brandId: null);
 
         foreach (var client in new[] { admin, staff })
         {
@@ -291,7 +311,6 @@ public sealed class ProductFilterTests
 
             items[local].Should().BeTrue();
             items[imported].Should().BeFalse();
-            items[unbranded].Should().BeFalse("a product with no brand is not local");
         }
 
         // Not cost data, so it may reach Staff; it must not have brought cost with it.

@@ -18,6 +18,12 @@ public sealed class BackupOptions
     public int RunAtLocalHour { get; init; } = 2;
 
     /// <summary>
+    /// The product image directory to archive beside each dump (FR-017). Empty means the shop
+    /// stores no pictures and only the database is backed up.
+    /// </summary>
+    public string ProductImageDirectory { get; init; } = string.Empty;
+
+    /// <summary>
     /// Directory holding mysqldump/mysql. Empty means "already on PATH", which is the normal
     /// case on a server; a developer machine often has MySQL installed but not on PATH.
     /// </summary>
@@ -31,6 +37,9 @@ public sealed class BackupService : IBackupService
 {
     private const string FilePrefix = "moizpos-";
     private const string FileExtension = ".sql";
+
+    /// <summary>Pictures ride beside the dump, sharing its timestamp so the pair is obvious.</summary>
+    private const string ImageArchiveExtension = "-images.zip";
 
     private readonly BackupOptions _options;
     private readonly string _connectionString;
@@ -81,6 +90,28 @@ public sealed class BackupService : IBackupService
         {
             throw new BusinessRuleViolationException(
                 "The backup produced no output. Check that mysqldump can reach the database.");
+        }
+
+        // The pictures, beside the dump (FR-017). The database holds only their paths, so a
+        // dump on its own restores a catalogue whose every photograph is gone.
+        //
+        // Deliberately after the dump has been verified, and deliberately not fatal: a backup
+        // of the shop's money that succeeded must not be discarded because a picture file was
+        // locked. The ledger is what cannot be reconstructed; a photograph can be retaken.
+        if (!string.IsNullOrWhiteSpace(_options.ProductImageDirectory))
+        {
+            try
+            {
+                ProductImageArchive.Create(
+                    _options.ProductImageDirectory,
+                    Path.Combine(
+                        _options.Directory,
+                        $"{FilePrefix}{localNow:yyyy-MM-dd-HHmmss}{ImageArchiveExtension}"));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Swallowed on purpose, per the reasoning above.
+            }
         }
 
         return new BackupResult(fileName, info.Length, _clock.UtcNow);
@@ -143,8 +174,14 @@ public sealed class BackupService : IBackupService
         var cutoff = _clock.UtcNow.AddDays(-_options.RetainDays);
         var removed = 0;
 
-        foreach (var file in new System.IO.DirectoryInfo(_options.Directory)
-                     .GetFiles($"{FilePrefix}*{FileExtension}"))
+        // Both the dumps and the picture archives beside them: retiring only the dumps would
+        // leave the zips growing without limit, which is how a backup disk quietly fills up.
+        var expired = new System.IO.DirectoryInfo(_options.Directory)
+            .GetFiles($"{FilePrefix}*{FileExtension}")
+            .Concat(new System.IO.DirectoryInfo(_options.Directory)
+                .GetFiles($"{FilePrefix}*{ImageArchiveExtension}"));
+
+        foreach (var file in expired)
         {
             if (file.CreationTimeUtc >= cutoff)
             {

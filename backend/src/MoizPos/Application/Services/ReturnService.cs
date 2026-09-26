@@ -23,12 +23,22 @@ public sealed record RecordSaleReturnRequest
     public IReadOnlyList<SaleReturnLine> Items { get; init; } = [];
 }
 
+/// <summary>One product's stock effect from a return — what the confirmation popup names.</summary>
+public sealed record ReturnedProductUpdate(string ProductName, int NewQuantityOnHand);
+
+/// <param name="TotalBilled">What the returned goods were listed at — 600.</param>
+/// <param name="TotalDiscount">The adjustment, which the shopkeeper explains to the
+/// customer — 25. Recorded, never discarded: it is why they are handed 575 for a 600 item.</param>
+/// <param name="TotalReturned">What is actually given back — 575.</param>
 public sealed record RecordSaleReturnResult(
     long ReturnId,
     string ReturnNumber,
+    decimal TotalBilled,
+    decimal TotalDiscount,
     decimal TotalReturned,
     decimal RefundDue,
-    decimal? CustomerBalance);
+    decimal? CustomerBalance,
+    IReadOnlyList<ReturnedProductUpdate> Items);
 
 public sealed record RecordPurchaseReturnRequest
 {
@@ -42,6 +52,7 @@ public sealed record RecordPurchaseReturnRequest
 public sealed record RecordPurchaseReturnResult(
     long ReturnId,
     string ReturnNumber,
+    string ProductName,
     decimal TotalReturned,
     int NewQuantityOnHand,
     decimal NewSupplierPayable);
@@ -122,6 +133,9 @@ public sealed class ReturnService : IReturnService
 
         var toWrite = new List<SaleReturnItemToWrite>(request.Items.Count);
         var totalReturned = 0m;
+        var totalBilled = 0m;
+        var totalDiscount = 0m;
+        var stockUpdates = new List<ReturnedProductUpdate>(request.Items.Count);
 
         foreach (var requested in request.Items)
         {
@@ -133,21 +147,43 @@ public sealed class ReturnService : IReturnService
             // Refuses more than was sold, including what earlier returns already took (FR-026).
             StockRules.EnsureReturnable(line.Quantity, line.ReturnedQty, requested.Quantity);
 
-            var lineTotal = Round(line.UnitSalePrice * requested.Quantity);
+            // Refunded at what the customer actually paid for these units: the line total, less
+            // this line's share of the order discount (ReturnPricing). Refunding the billed
+            // price would hand back money that was never taken, and a full return would then
+            // exceed the invoice's value by exactly the discount.
+            var lineTotal = ReturnPricing.RefundFor(
+                line.LineTotal, line.Quantity, requested.Quantity,
+                invoice.Subtotal, invoice.Total);
+
+            var unitRefundPrice = ReturnPricing.EffectiveUnitPrice(
+                line.LineTotal, line.Quantity, invoice.Subtotal, invoice.Total);
+
+            // The difference between the two is the adjustment the customer is told about: a
+            // 600 item sold for 575 comes back at 575, and the 25 is recorded, not discarded.
+            var billedTotal = Round(line.UnitSalePrice * requested.Quantity);
+            var discountTotal = Math.Max(0m, Round(billedTotal - lineTotal));
+
             totalReturned += lineTotal;
+            totalBilled += billedTotal;
+            totalDiscount += discountTotal;
 
             toWrite.Add(new SaleReturnItemToWrite(
                 line.Id, line.ProductId, line.ProductName, requested.Quantity,
-                line.UnitSalePrice, line.UnitCostPrice, lineTotal));
+                line.UnitSalePrice, unitRefundPrice, line.UnitCostPrice, discountTotal, lineTotal));
         }
 
         totalReturned = Round(totalReturned);
+        totalBilled = Round(totalBilled);
+        totalDiscount = Round(totalDiscount);
 
-        // A return can never give back more than the invoice is still worth.
+        // A backstop only. Since the order discount is now spread across the lines, returning
+        // every unit adds up to the invoice total exactly — this can no longer fire from a
+        // discount. It still guards rounding and any figure edited outside the app: the shop
+        // cannot owe back more than the sale was worth.
         if (totalReturned > invoice.NetAmount)
         {
-            throw new BusinessRuleViolationException(
-                $"Returning {totalReturned:0.00} exceeds the invoice's remaining value of {invoice.NetAmount:0.00}.");
+            totalReturned = invoice.NetAmount;
+            totalDiscount = Math.Max(0m, Round(totalBilled - totalReturned));
         }
 
         // Where the money goes depends on whether the customer already paid. An unpaid credit
@@ -183,6 +219,8 @@ public sealed class ReturnService : IReturnService
 
             await AuditAsync(uow, "Product", item.ProductId, "quantity_on_hand",
                 product.QuantityOnHand, newQuantity, "SaleReturn", userId, nowUtc, cancellationToken);
+
+            stockUpdates.Add(new ReturnedProductUpdate(item.ProductName, newQuantity));
         }
 
         await _returns.ReduceInvoiceNetAmountAsync(
@@ -214,7 +252,8 @@ public sealed class ReturnService : IReturnService
         await uow.CommitAsync(cancellationToken);
 
         return new RecordSaleReturnResult(
-            returnId, returnNumber, totalReturned, refundDue, customerBalance);
+            returnId, returnNumber, totalBilled, totalDiscount, totalReturned,
+            refundDue, customerBalance, stockUpdates);
     }
 
     public async Task<RecordPurchaseReturnResult> RecordPurchaseReturnAsync(
@@ -279,7 +318,7 @@ public sealed class ReturnService : IReturnService
         await uow.CommitAsync(cancellationToken);
 
         return new RecordPurchaseReturnResult(
-            returnId, returnNumber, total, newQuantity, newPayable);
+            returnId, returnNumber, product.Name, total, newQuantity, newPayable);
     }
 
     private static decimal Round(decimal value) =>

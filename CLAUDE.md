@@ -59,7 +59,8 @@ finds only Oppo chargers (feature 003).
   between two fields.
 - A full barcode is still matched exactly and whole, as an alternative to the word match.
 - **Search is shared by the Products, POS and Purchases screens.** A change to it is a change to
-  all three. The POS takes the first result, so result order (by name) matters there.
+  all three. Since feature 005 the POS shows the first 8 results as cards rather than taking the
+  first one, so result order (by name) decides what the salesman is offered.
 - It normalises at query time rather than from a stored column so a brand or category rename can
   never leave search stale. `A_multi_word_search_across_five_thousand_products_is_under_a_second`
   guards the cost; if it ever fails, the stored-column fallback is documented in
@@ -123,6 +124,246 @@ total opens the sales behind it — invoice, time, customer, and the salesman wh
 - Reports: `GET /api/reports/sales-by-type` (both halves, zeroes included) and
   `GET /api/reports/sales-list` (the drill-down; omit `saleType` for the whole day).
 
+## Product pictures
+
+A product may carry one optional picture (feature 005). `products.image_path` holds the full-size
+image's path; **the thumbnail has no column** — its path is derived by inserting `_thumb` before
+the extension, by `ProductImagePaths.ThumbnailFor` on the server and `thumbnailPathFor` in
+`ProductPicture.tsx` on the client. Two derivations of one stored fact cannot drift; two stored
+columns can.
+
+- **Uploading decodes the image** rather than copying the bytes through. The content type is the
+  client's claim; a file that is not really an image would otherwise sit in the catalogue failing
+  to render on every screen. Decoding is also what produces the thumbnail, so it is not extra work.
+- A thumbnail fits inside 150×150 preserving aspect ratio, and **a smaller image is never
+  enlarged** — upscaling invents detail and makes the "thumbnail" larger than the original.
+- **Deleting an image deletes its thumbnail too.** A replaced picture that leaves its thumbnail
+  behind is unreachable: nothing reads it and nothing ever deletes it.
+- **Lists load thumbnails, never full images.** Only `ProductDetail` passes `size="full"`. Getting
+  this wrong is invisible locally and ruinous over the shop's connection.
+- **Backups include the image folder** (`ProductImageArchive`, a `-images.zip` beside each dump).
+  The database holds only paths, so a database-only restore brings back a catalogue whose every
+  photograph is gone for good. `PruneAsync` retires the zips alongside the dumps.
+
+## The cart, and the counter after a sale
+
+**The cart lives above the router** (`CartProvider`), not inside `PosScreen`. It was local state
+until now, so walking to the Products list to fetch a second item destroyed it — which is why
+"go back and add more" could never work: there was nothing left to come back to.
+
+- **`useCart()` falls back to local state when no provider is present.** That is deliberate:
+  `PosScreen` stays a function of its props and its cart maths remains testable in isolation,
+  which is how every existing counter test renders it. Do not make the provider mandatory.
+- **Persistence is `sessionStorage` with a same-trading-day expiry** (`cartStorage.ts`), never
+  `localStorage`. A cart is worth surviving an accidental refresh; it is not worth surviving
+  overnight.
+- **A restored cart is re-priced before it can be sold.** `needsReprice` is raised only for lines
+  that came back from storage. This is not belt-and-braces: `InvoiceService` takes the **unit
+  price from the client**, so a cart carrying a price from before a purchase changed it would
+  sell at the old figure and nothing would flag it.
+- **The Products list sells too.** Every row has Add to cart, and the counter has "Add more
+  items" leading back — a round trip the cart now survives. `CartBadge` shows the sale in
+  progress and returns to the counter; it is hidden entirely when the cart is empty.
+- **Adding from the Products list RE-READS the price** (`productApi.get(id, saleType)`) instead
+  of taking the row's. That list is priced at the counter rate, and the sale being built may be
+  a wholesale one — using the row's price would quietly sell wholesale goods at retail. If the
+  price cannot be read the item is **not** added: adding at an unknown price is worse.
+- **The merge rule lives in `withItem`** in the cart store, shared by the counter and the
+  Products list. One product is one line — the server refuses two, and each would check stock
+  against the same locked row and oversell.
+- **Saving a sale clears the cart but keeps the receipt.** The receipt is the proof the sale
+  happened and carries the payment-proof upload, so it is cleared only by the explicit **New
+  sale** button. The old screen emptied the cart on save, which disabled the Save button (it is
+  disabled when there is nothing to sell) and left a success banner sitting above a dead
+  control — nothing was broken, but the screen read as frozen. A disabled Save now always says
+  why, beside it.
+
+## Checkout — who is buying, and how they are paying
+
+Asked once, at the end, in `CheckoutModal` — not while the cart is being built. The counter's
+button is **"Proceed to sale"**; the modal's is **"Complete sale"**.
+
+- **The existing-customer picker is the point of this component.** Before it the counter could
+  only *create* a customer, so selling to the same person twice on udhaar produced two records
+  with two balances, and the owner chasing a debt saw half of it. Walk-in / Existing / New —
+  and the picker shows what each customer already owes before adding to it.
+- **Udhaar and part payment require a customer**, mirroring the server (FR-017). A walk-in is
+  refused with an explanation rather than silently allowed.
+- A part payment must be **more than zero and less than the total**. Anything else is a full
+  payment mislabelled.
+- **`amountPaid` is derived, never typed twice**: a cash-type method settles the bill, `Credit`
+  pays nothing, `Partial` is what the shopkeeper entered. Two controls that can contradict each
+  other will.
+- **Account number and transaction ID appear only for a transfer** (`BankTransfer`, `JazzCash`,
+  `EasyPaisa`, `Raast`). Cash in the drawer came from nowhere else and is never asked. They are
+  optional — the counter must never wait while someone hunts for a reference.
+- They are stored on the invoice (`payment_account_number`, `payment_transaction_id`,
+  migration `0021`) and are the **customer's** account, not the shop's: the money came *from*
+  there. **A Cash sale is refused both (422)**, the same rule and the same reasoning as the
+  proof screenshot — and the check sits in `InvoiceService` **before the first write**, so a
+  refusal leaves no invoice and no stock movement. Length is bounded by the validator; whether
+  a reference is *allowed* is the service's call, so the rule lives in one place.
+- Blank is stored as **NULL, never an empty string** (`Trimmed`), so "not given" is one value in
+  the column rather than two every later query must handle.
+- **Keep Raast.** It is in the `payment_method` enum and in `PAYMENT_METHODS`; dropping it from
+  the UI would make it unsellable while remaining a legal stored value.
+- `handleConfirm` **re-throws** on failure so the modal stays open and shows the error with the
+  cart intact. Swallowing it would close the modal on a refusal and lose the sale.
+
+## Udhaar on the dashboard
+
+`UdhaarSalesCount` / `UdhaarSalesAmount` and `PartPaidSalesCount` / `PartPaidRemaining` show how
+the period's `CreditSales` was made up.
+
+- **Visibility, not new money.** Every rupee is already inside `CreditSales` and
+  `TotalReceivables`. Adding either card to either total counts the same debt twice — the same
+  discipline `TotalSaleReturns` follows. `The_two_halves_add_up_to_the_periods_credit_sales`
+  asserts the reconciliation, and the "Owed to shop" card carries a note saying it already
+  includes them, because adding them is the obvious wrong next step.
+- **Split by the money, never by `payment_method`.** Full udhaar is `amount_paid = 0`; part paid
+  is `amount_paid > 0`; both require `amount_remaining > 0`. A sale labelled `Cash` whose payment
+  fell short is still credit — the same reasoning as the credit-authority rule, and a test
+  asserts exactly that case.
+- The two halves are mutually exclusive by construction, so nothing is counted twice and they
+  always sum to `CreditSales`.
+
+## The POS picker
+
+Since feature 005 a **typed search at the counter offers candidates; it does not add one**. Up to
+8 result cards appear and nothing enters the cart until Add is pressed — including when exactly
+one product matched, because "the only thing matching what I typed" is not "the thing in the
+customer's hand".
+
+- **A scanned barcode still adds directly**, unchanged. It is unambiguous, so a confirming click
+  would cost every sale time and prevent nothing. `ProductLookup` is a discriminated union
+  (`{kind:'barcode'}` vs `{kind:'matches'}`) precisely so these two cannot be collapsed back
+  together — that collapse is what made the old code add the first search hit sight-unseen.
+- The search button is labelled **"Search", not "Add"** — it no longer puts anything in the cart.
+- Sale type stays one choice at the top of the sale and still re-prices existing lines.
+
+## Payment proof (non-cash sales)
+
+An invoice whose `payment_method` is not `Cash` may carry one screenshot in
+`invoices.payment_proof_path` (migration `0018`, feature 008). Optional, permanently.
+
+- **A Cash sale is refused one** (422). The money was counted into the drawer; a "proof" there
+  would be evidence of nothing and would invite proof on sales that never had a transfer.
+- **Attached after the sale, never during.** The upload is addressed to an invoice id that does
+  not exist until the sale is saved, and the counter must never wait on a picture.
+- **Any signed-in user may attach and view one** — the salesman is who takes the payment. Narrow
+  it later if the owner wants.
+- **Never served through the public receipt link.** That link is unauthenticated and
+  customer-facing; a payment screenshot is internal evidence. Proofs live in their own directory
+  (`content/payment-proofs`) precisely so one can never be served by a rule meant for the other.
+- No thumbnail: a proof is opened full-size in a dispute or not at all.
+- **`InvoiceWithCustomerName.ToInvoice()` is hand-written.** A column added to the SELECT but not
+  to that method is dropped in silence — that is exactly how `payment_proof_path` first read back
+  null on a proof that had stored correctly.
+
+## Customer sale type (retail/wholesale filtering)
+
+Every customer carries a `sale_type` of `Retail` or `Wholesale` (migration `0019`, feature 004),
+defaulting to Retail. The Customers screen offers All/Retail/Wholesale beside search, as
+alternatives — never combined with each other, but combined with search and "owes money".
+
+- **It is a standing label, never derived from invoices.** A wholesale party's occasional
+  counter purchase must not reclassify them, and a customer with no sales yet must not have a
+  type invented. This is the opposite of how `sale_type` works on `invoices` — that one is
+  recorded per sale; this one is set once, by the owner, on the customer.
+- **Admin-only to set** (FR-105), same pattern as opening balances: the request DTO carries a
+  nullable `SaleType?`, and the controller applies it only when `CurrentUser.Role(User) ==
+  Admin`, silently ignoring it otherwise. This keeps Staff's quick-create-during-a-sale
+  (FR-017) working unchanged rather than rejecting the request outright.
+- **Every enum column in this schema is written as a string explicitly** — `.ToString()` in the
+  INSERT/UPDATE parameters, never the bare entity. Dapper has no enum type handler registered
+  (`DapperConfig.Apply()`), so passing an enum property straight through serializes it as its
+  underlying **int**, which a `CHECK (col IN ('Retail','Wholesale'))` constraint rejects at write
+  time — a real bug this feature hit, caught immediately by a failing insert.
+- The day's retail/wholesale takings split (feature 004 of `sale_type` on `invoices`) is
+  unrelated and unchanged — a different question answered by Reports, not by this filter.
+
+## Returns — history and dashboard visibility
+
+Recording a return (feature: Returns module) was only half the job — until now there was no way
+to see what had been returned. Two GET endpoints and two Dashboard fields close that gap.
+
+- **`GET /api/sale-returns`** and **`GET /api/purchase-returns`** list what the POST endpoints
+  already recorded — one row per product returned, with date, invoice/supplier, quantity, value,
+  and (for sale returns) refund due. Same authority as the POST siblings: sale returns open to
+  any signed-in user, purchase returns Admin-only (that route reveals cost and payables).
+- **Purchase returns scope to a supplier** via `?supplierId=`, because a return always goes back
+  to whichever supplier the goods came from — "every return to everyone" is rarely the question
+  being asked. The Returns screen's Supplier tab now has a supplier picker that filters both the
+  purchase list and the return history together.
+- **Dashboard gained `totalSaleReturns` / `totalPurchaseReturns`.** These are visibility only —
+  the money was already correct: `invoices.net_amount` (Sales) and the purchases total both
+  already subtract returns, per the existing `TotalPurchasesAsync` query. The new fields do not
+  change any total; they just show the owner the return figure that was already folded in,
+  instead of leaving it invisible inside a smaller number.
+
+## Return item — find a return by product name
+
+Both return tabs have a **Return item** button (next to Find invoice / next to the supplier
+dropdown) that finds a returnable sale or purchase by product name, so nobody needs an invoice
+number in hand.
+
+- **`GET /api/sale-returns/find?search=`** — matches product name against still-returnable
+  invoice lines (`quantity > returned_qty`), newest first, capped at 8. Same 2-letter minimum as
+  every other search in this app.
+- **`GET /api/purchases?productSearch=`** — same idea for supplier returns, combined with the
+  existing `supplierId` scope.
+- **Every return result now names the exact product and its new stock** —
+  `RecordSaleReturnResult.Items` (one entry per product) and
+  `RecordPurchaseReturnResult.ProductName`. The confirmation banner reads the product name and
+  updated quantity back to the shopkeeper, not just "it worked".
+- `Purchase` gained `ProductName` (joined from `products`), because a return-by-name flow that
+  cannot show the name it matched on defeats its own purpose.
+
+## What a returned unit is worth
+
+**A return refunds what the customer paid, not what the line was billed at.** An invoice line is
+priced *before* the order discount: one charger at 600 on an invoice discounted by 10 stores
+`line_total = 600` while the customer handed over 590. `ReturnPricing` (Application, pure) spreads
+the order discount across the lines in proportion to their value — a line's net worth is
+`line_total × (total / subtotal)`, and one unit is that over the quantity sold.
+
+- **Why it matters:** refunding the billed price hands back money that was never taken, and
+  returning every unit then adds up to more than the sale was worth. That is exactly what produced
+  *"Returning 600.00 exceeds the invoice's remaining value of 590.00"* at the counter. With the
+  discount spread, a full return settles at the invoice total precisely —
+  `Returning_every_unit_of_a_discounted_sale_settles_the_invoice_exactly` asserts it.
+- **The discount is RECORDED on the return, never just subtracted.** Migration `0020` adds
+  `unit_refund_price` and `discount_total` to `sale_return_items`, so a return holds all three
+  figures: billed 600, refunded 575, adjusted 25. `unit_sale_price` keeps its original meaning —
+  what the line was **billed** at. Re-deriving the discount from the invoice at read time would
+  re-price history the moment anyone edits the sale.
+- **The adjustment is shown, in words.** The owner's phrase for it: *amount adjustment is the
+  main feature*. The form carries Price / Discount / Refund per unit as three columns, an
+  Item value → less discount → Value returned summary, and a note telling the salesman what to
+  say. `RecordSaleReturnResult.TotalBilled`/`TotalDiscount` put the same figures in the
+  confirmation, and the history list keeps them visible months later. Showing only the refund
+  leaves the customer arguing that a 600 item came back as 575.
+- **Line discounts need no spreading** — they are already inside `line_total`. Never apply one
+  twice by subtracting `line_discount` again.
+- **The cap against `net_amount` in `ReturnService` is now a backstop only.** It can no longer
+  fire from a discount; leave it for rounding and figures edited outside the app.
+- `sale_return_items.unit_sale_price` records the **effective** price, so `unit × quantity`
+  reconciles with the money that actually moved.
+- The search list (`GET /api/sale-returns/find`) carries the money with each result. The endpoint
+  returns **`ReturnableSaleLine`**, mapped from the raw `ReturnableLineRow` by
+  `ReturnableSaleLine.From` — the one place a search result's amounts are worked out, from the
+  same `ReturnPricing` the write path charges at. Never re-derive a price in TypeScript: two
+  derivations of one rule drift, and the screen would promise a refund the server does not pay.
+- **Every amount on `ReturnableSaleLine` is a stored property, never a computed getter.** A
+  getter is easy to leave out of a response and impossible to see missing from the server side;
+  when `RefundPerUnit` and friends were getters, every figure on the Returns screen rendered as
+  **`Rs NaN`** and no return could be recorded at all, while every server-side test still passed.
+  `Return_item_search_carries_what_each_unit_is_worth_back` asserts the actual JSON, which is the
+  only assertion that would have caught it.
+- The names say what they are, in shop words:
+  `quantitySold` / `quantityReturned` / `quantityAvailable`, `unitSalePrice` (what the receipt
+  shows), **`refundPerUnit`** (what a unit is worth back), `discountPerUnit`, `maxRefund`.
+
 ## Categories and Brands
 
 A product is filed against a row in the `categories` table (required) and optionally one in
@@ -137,10 +378,63 @@ into foreign keys, migrating every distinct value that existed rather than disca
   row instead: products keep their label, and the retired row simply stops being offered.
 - `ProductRow.Category` and `.Brand` are the joined **names**, for display; `CategoryId` and
   `BrandId` are what a write accepts.
-- **Local brands** (feature 003): `brands.is_local` defaults to **Imported**, so nothing is local
-  until the owner marks it. The Products `localOnly` filter requires `b.is_local = TRUE`, which
-  through the `LEFT JOIN` deliberately excludes **unbranded** products — local is a property of a
-  brand, and an imported item saved without one must not be misreported as local.
+- **Local goods are an ordinary brand, not a flag.** The owner handles them by creating a brand
+  named for local stock and filing those products under it, exactly like Vivo or Oppo. The
+  `is_local` tick-box on the brand form, the Local/Imported column on the Brands list and the
+  "Local brands only" filter on Products were all **removed from the UI** at the owner's request —
+  a brand is a name, and one more yes/no on every brand earned nothing the name did not.
+- `brands.is_local` and the API's `localOnly` filter **still exist** and are untouched. Nothing
+  sets the column any more, so it reads `FALSE` for every new brand and `localOnly` returns an
+  empty list. They were left rather than dropped because removing a column needs a migration and
+  buys nothing; if the owner ever wants the distinction back, the plumbing is already there.
+  **Do not re-add the UI without asking** — its removal was deliberate, and three tests pin it:
+  `offers no local-brands filter, and never asks the server for one`,
+  `shows no Local or Imported label against any brand`, `offers no local tick-box on either screen`.
+
+## Every product names a brand
+
+Migration `0027` made `products.brand_id` **`NOT NULL`**, and `0028` left it that way.
+
+- The owner's rule: goods with no well-known maker are filed under a brand created for them
+  (a "local goods" brand), **not left blank**. So "no brand" is not a state a product can be in.
+- `ProductUpsertRequest.BrandId` is a plain `long`, required by the validator.
+- **`0027` also introduced a `brand_categories` link — that was REVERTED by `0028`.** The owner
+  tried "a brand carries a set of categories" and asked for it out again: the extra setup step
+  earned nothing at this shop's size. A category is chosen from the whole list, as before.
+  `0027` was not edited, because an applied script is history; `0028` is its reversal.
+- **Do not re-introduce the link without asking.** It cost a schema change in both directions.
+
+## Adding a product, then stocking it
+
+**A product is a catalogue entry — what the thing IS. Its first purchase is what makes it
+sellable.** Add product → record a purchase → sell.
+
+- **`ProductUpsertRequest` carries NO price and NO quantity.** Not zeroed — *absent*. Two screens
+  that can both price an item is one more than the shop can keep straight, and the moment someone
+  uses the wrong one the counter quotes a figure nobody intended.
+  `Carries_no_price_or_quantity_at_all` asserts the properties do not exist.
+- A new product is created with `cost_price`, `sale_price`, `wholesale_price`, `retail_price` and
+  `quantity_on_hand` all **0**, and the product UPDATE statement **does not mention a price
+  column** — so editing what a product IS can never change what it is worth.
+- **The purchase sets all of it, in one statement**: quantity, cost, and both selling prices
+  (`UpdateProductStockAndPricingAsync`). One statement on purpose — a product whose quantity rose
+  but whose price did not is the half-stocked state the counter cannot sell from.
+- **`NewRetailPrice` is required on a FIRST stocking**, optional afterwards. "First" means
+  `product.SalePrice <= 0`, read from the **locked row** so two first-purchases racing cannot both
+  see "no price yet". Omitted on a repeat delivery means *leave the price standing*.
+- **The shop has exactly THREE prices**, and since migration `0029` so does the table:
+  `cost_price` (what we paid), `wholesale_price` (what a bulk buyer pays) and `retail_price`
+  (what a walk-in pays). A fourth column, `sale_price`, used to be the one pricing actually read
+  while `retail_price` sat written-but-never-read — the names said the opposite of the truth.
+  `0029` drops it and `retail_price` is now what a retail sale is quoted from.
+- **`salePrice` on the API is not a column.** It is the RESOLVED price for the sale being made —
+  `retail_price` or `wholesale_price`, whichever the `saleType` asked for — computed per request.
+  Staff receive only that; the three stored prices reach the Admin DTO alone (FR-040).
+- **`InvoiceService` refuses to sell a product whose `SalePrice <= 0`**, checked against the
+  locked row beside the stock check. Necessary because the client supplies the unit price and
+  would otherwise happily sell an unpriced product at whatever it claimed.
+- Tests that need something sellable but are not about stocking use
+  `ApiFactory.StockProductAsync(...)`. The real rule lives in `Products/StockingFlowTests`.
 
 ## The two business rules that drive the design
 
@@ -163,6 +457,10 @@ Each of these caused a real bug during the build.
 
 | Trap | What happens | Guard |
 |---|---|---|
+| Putting a price or a quantity back on the product form | Two ways to price an item, and they disagree the first time anyone uses the wrong one. It also re-opens editing history: an edit could re-price stock bought months ago | They are absent from `ProductUpsertRequest`, and the product UPDATE names no price column. `Carries_no_price_or_quantity_at_all` fails if they return |
+| Re-adding a fourth price column | `0029` removed `sale_price` precisely because two columns for one price cannot be kept honest — one gets written and the other gets read | Three prices: `cost_price`, `wholesale_price`, `retail_price`. `salePrice` in the API is resolved, never stored |
+| `DROP CHECK` in a migration | MySQL-only syntax. **The shop's server is MariaDB 10.5 and the test database is MySQL 8.0**, so it passes locally and fails on the live server — which is exactly how `0029` failed on its first run | `DROP CONSTRAINT`, understood by MariaDB 10.2+ and MySQL 8.0.19+ |
+| Running `migrate` with `--no-build` after editing a script | The `.sql` files are **embedded resources**, so the migrator reruns the previous copy and fails identically | Build before migrating |
 | Joining profit queries to `products.cost_price` | Every past month's profit silently rewrites itself whenever stock is bought | Always use `invoice_items.unit_cost_price` — the cost snapshotted at sale |
 | Returning `ProductAdminDto` typed as `ProductStaffDto` | System.Text.Json serialises the *declared* type, so the Admin silently loses cost data | `[JsonDerivedType]` on the base — do not remove it |
 | Dapper + positional records | Ids are `BIGINT UNSIGNED` (ulong) but the domain uses `long`; Dapper matches records by exact constructor signature and will not convert | Materialised types use init-only properties, never `record Foo(...)` |
@@ -174,6 +472,22 @@ Each of these caused a real bug during the build.
 | Adding a folder outside the five layers | It is silently unchecked by the layering tests | `Every_source_file_sits_in_a_known_layer` fails until you add the layer to `LayeringTests.Allowed` and say what it may depend on |
 | A config source added in `Program.cs` after `CreateBuilder` | It outranks what the test factory injects, and the connection string is read moments later — so the whole suite silently runs against whatever this machine names, including the live server | `ApiFactory` sets `SkipMachineLocalSettings`; `HostConfigurationTests` asserts the **data layer's own** connection, because `IConfiguration` showed the right database while the repositories held the wrong one |
 | Two cart lines for one product | Each checks stock against the same locked row and can oversell | `InvoiceService` refuses duplicates; the POS merges them |
+| Storing the thumbnail's path in its own column | It duplicates a value already derivable from `image_path`, and the two drift the moment a fix-up script updates one | Derive it — `ProductImagePaths.ThumbnailFor` / `thumbnailPathFor` |
+| Rendering a full-size image in a list | Invisible on a dev machine; over the shop's connection the Products grid stalls | `ProductPicture` loads the thumbnail unless passed `size="full"` |
+| Backing up the database alone | Every product comes back with a placeholder — the picture files were never copied | `ProductImageArchive` writes a `-images.zip` beside each dump |
+| Adding an invoice column without touching `ToInvoice()` | The SELECT returns it and the hand-written mapper silently drops it; the API reads back null | Add the property to `InvoiceWithCustomerName` **and** its `ToInvoice()` |
+| A supplier "opening balance" column | `payable_balance` has an asserted invariant (purchases − payments − returns); an opening figure belongs to none of those terms | It needs a ledger entry and correction-by-delta, like customer opening balances — its own feature |
+| Posting FormData through the API client | The client forces `Content-Type: application/json`, so multipart uploads lose their boundary and the server answers 415 | The request interceptor deletes that header when the body is `FormData` |
+| Building a test tag from `Guid…Where(char.IsLetter)` | A GUID's letters are only `a`–`f`, so six characters is a 46k-symbol space, not 300M. Seeds collide and fail a **random** test with a duplicate-key error that looks like a flake in whatever test drew the short straw | Map each hex digit onto its own letter (`HexToLetter` in `ProductSearchTests`) — letters-only, full 16 symbols |
+| "Tidying away" the one-item groups in the rail | **Sell** holds only *New sale*, and for a Staff user **Inventory** holds only *Products* — both look like mistakes and are not. The catalogue (Products, Categories, Brands) is its own **Inventory** group; **Purchasing** keeps only Purchases and Suppliers, so it stays Admin-only and does not render for a salesman at all | `leaves the counter alone in the Sell group`, `keeps the catalogue together under Inventory` and `shows a salesman Products under Inventory, and nothing else there` record all three on purpose |
+| Adding a route without a rail icon | Icons live in `index.css` keyed on `href`, not in markup (adding an element would change each link's text, which the nav tests read). A new module ships looking unfinished beside the rest — it happened twice | `AppShell.test.tsx` now reads the stylesheet and fails naming any link with no `::before` rule. The guard is verified: removing one reddens it |
+| Treating `NOT NULL` on an **ENUM** as "the column refuses a missing value" | It refuses an explicit NULL and nothing else. **Strict mode does not help**: measured on MySQL 8.0.40 with `STRICT_ALL_TABLES` on, an INSERT omitting `expenses.payment_source` stored the ENUM's **first member** with no error, because MySQL treats it as an implicit default | You cannot stop the coercion, so choose what it lands on. Migration `0025` orders the members `('Bank','Till')` so a forgotten source is **excluded** from the drawer rather than deducted from it. `A_write_that_forgets_the_source_never_lands_on_cash` guards the order |
+| Reordering ENUM members without `ALGORITHM=COPY` | An in-place change can reinterpret the stored index rather than re-mapping by string — turning every `Till` into `Bank` | `0025` states `ALGORITHM=COPY`, and `Both_sources_still_read_back_as_they_were_written` asserts values survived |
+| Seeding rows with raw SQL that the service would have refused | The invariant suite scans the WHOLE database, so one bad seed row reddens `Every_invoice_that_owes_money_names_a_customer` — and the test database is never dropped, so it stays red until the row is removed | Seed valid data: a sale with `amount_remaining > 0` must name a customer (FR-017), even when inserted directly |
+| An integration test that DELETEs to isolate itself | The test database is shared by every class in `ApiCollection`. Clearing `invoices`/`stock_movements` to reason about one day's figures reddened an unrelated reporting test | Seed your own data and assert deltas, or work on a private past date — never clear a shared table |
+| A test fixture keyed off "today" for a once-only resource | The test database is created once and KEPT, so rows survive between runs. `day_closings` is unique per date, so days derived from today collided with the previous run and every close returned 422 | Draw a random base offset once per run (`RunBaseOffset` in `DayClosingTests`) so each run works on untouched dates |
+| Reading a MySQL `DATE` into a `DateOnly` | Throws at materialisation — Dapper has no built-in handler | `DapperConfig` registers `DateOnlyHandler`; a trading day is a date with no time and no zone, and must never be carried as a `DateTime` something can shift across midnight |
+| Passing an enum property straight to Dapper in an INSERT/UPDATE | No enum type handler is registered, so it writes as the underlying int — any `CHECK (col IN (...))` on that column then rejects every write | Spell it out: `saleType = customer.SaleType.ToString()`, matching every other enum column in this schema |
 
 ## Non-negotiables
 
@@ -212,6 +526,104 @@ implement it in `Infrastructure`** — that is what the `*WriteRepository` types
 Stored in UTC. Reporting periods resolve against `Asia/Karachi` (+05:00, no DST) through
 `PeriodResolver`, which returns half-open ranges so a sale lands in exactly one bucket. Inject
 `IClock`; never call `DateTime.UtcNow` in a service.
+
+## Giving a customer their bill
+
+Print, Download, WhatsApp and SMS, from the counter receipt, the Invoices screen and the customer
+ledger. All of it was built and tested long before any screen offered it (feature 009).
+
+- **Both send routes are deep links; nothing is sent by the server.** `wa.me` and `sms:` prepare a
+  message in the counter device's own app and the shopkeeper taps Send. The shop holds no
+  messaging account, registers no sender id, and pays nothing per message. Do not replace either
+  with a gateway without deciding to take on that cost.
+- **SMS is the fallback, not the default.** 160 characters against a long share link means two or
+  three charged parts; WhatsApp has no such limit.
+- **Number normalisation is shared** (`WhatsAppLinkBuilder.NormaliseNumber`, reused by
+  `SmsLinkBuilder`). Two copies would eventually disagree about what a valid number is.
+- **Message wording lives in `DocumentMessages`, not on either channel builder.** It moved there
+  when SMS arrived needing identical words. The figures go in the **body**, not only behind the
+  link: most customers never tap it, and an acknowledgement that only works when opened
+  acknowledges nothing.
+- **A payment message states the ledger's `balance_after`, never `customers.outstanding_balance`.**
+  The two part company the moment the customer buys again, and a re-shared receipt that restates
+  itself contradicts the shop's own register. This was a real bug;
+  `The_balance_is_the_one_recorded_at_that_payment_not_todays` guards it.
+- **A settled account is said in words**, not as "Remaining: Rs 0.00" — true, and reads like a
+  fault.
+- **Print uses the same bytes the customer receives.** A print-styled view is a second rendering,
+  and two renderings drift into a printed bill that disagrees with the sent one.
+- **The PDF routes are `/api/invoices/{id}/pdf` and `/api/customer-payments/{id}/pdf`** — flat
+  under `/api`, NOT under `/documents/`, despite sitting on `DocumentsController`. Only the
+  share-link routes carry that prefix. The client was once written from a contract document that
+  invented the prefix, so every Print and Download 404'd while the whole suite stayed green: the
+  server tests built their own URLs, and the client test asserted the URL the client had chosen.
+  `ClientDocumentRouteTests` now holds the literal strings the browser sends.
+- **PDF responses bypass the envelope.** `fetchBlob`, never `unwrap` — and the response
+  interceptor reads an error body back out of its Blob, or a failed document request reports a
+  generic "unexpected error" while the server's real reason sits unread. Mirror image of the
+  `FormData` trap.
+- **A walk-in types a number for one send.** No customer record is created and nothing is stored
+  — a one-off buyer is not a relationship. **A typed number never overrides a stored one**
+  (FR-124): a stored number is the shop's record of where a bill went.
+- **A share-link listing returns ids, never tokens.** Only the hash is stored; showing a live link
+  on an authenticated screen turns a bystander into a link holder. Revocation is by id, is
+  Admin-only, and is **idempotent without moving the original timestamp** — that timestamp is
+  evidence of when the withdrawal happened.
+- **`SharedDocumentExposureTests` fails the build if a document model gains a cost, profit,
+  supplier or proof field.** A template can only print what the model carries. The guard is
+  verified: adding `UnitCostPrice` to `InvoiceDocument` reddens it.
+- **The Invoices screen exists for walk-ins.** A sale with no customer appears in no ledger, so
+  without it most counter sales become unreachable once the counter resets. `customerName` comes
+  back **null** for one, not an invented label — wording "nobody" is the screen's job.
+
+## Counting the drawer
+
+`day_closings` (migration `0023`) records what the day took, what was counted, and the difference.
+**The only control the shop has over physical cash** — every other figure reconciles against
+itself, so a cash sale recorded perfectly and pocketed leaves no trace in any report.
+
+- **Admin only.** This is the control *over* the salesman's handling of cash; a short the
+  responsible person can close away is not a control.
+- **Figures are snapshotted at closing, never recomputed.** A return taken tomorrow against a sale
+  made today must not rewrite what was counted last night. A closing is evidence of one evening.
+- **One closing per day**, enforced by a unique key — otherwise a short could be closed away and
+  reopened at a more comfortable figure.
+- **Cash only.** A bank transfer never entered the drawer; counting it would show a false short
+  every day and teach the owner to ignore the difference. **`Partial` counts as cash**, because
+  `payment_method` does not record how the paid portion arrived and at this counter it is notes.
+- **Nothing is rounded** (`CashDrawer`, pure). A paisa short is still short — smoothing hides
+  exactly the small repeated differences that are the point.
+- **Every expense states where its money came from** — `Till` or `Bank`, required by
+  `CreateExpenseValidator` and `NOT NULL` since migration `0024`. Only `Till` is subtracted; a
+  bank payment never entered the drawer. The field **starts unanswered on the form**: defaulting
+  to Till would quietly drop every bank payment into the drawer calculation.
+- **The validator is the rule, not the column.** `NOT NULL` on an ENUM cannot stop an omitted
+  column even under strict mode (see Traps). `0025` orders the members so that when a write does
+  forget, it lands on `Bank` and is excluded — a wrong figure, but never a phantom short that
+  sends the owner hunting for cash that never left.
+- **The test suite runs strict, because the shop's server does.** The live database is MariaDB
+  with `STRICT_TRANS_TABLES` global; the development MySQL is not strict, so `ApiFactory` sets
+  `Database:EnforceStrictSqlMode` and `DatabaseFixture` does the same for its own connections.
+  Without it the suite proves behaviour under weaker rules than production — a coercion bug would
+  pass here and fail in the shop. It is **off in production**, where re-asserting it would cost a
+  round trip per connection for nothing.
+- **A difference is shown, never accused.** The `note` column is where "Rs 300 to the delivery
+  boy, not entered" goes; whether those notes stop appearing is how the owner learns the recording
+  discipline has taken hold.
+
+## Who sold what
+
+`GET /api/reports/sales-by-user` — each salesman's period: sales, cash taken, credit given,
+discount given, bill count. Admin only. **No cost and no profit**: this answers "who took the
+money and who gave the discounts", not "what did we make".
+
+- **Its real job is beside the drawer count.** A short is only answerable once you know who was
+  selling, and a discount pattern only means something attached to a person. On its own it is a
+  convenience — `sales-list` already names who sold each item.
+- **Cash taken and credit given are separate columns** because they are different risks: money in
+  the drawer tonight versus money that walked out of the shop.
+- **Discount counts both kinds.** Line discounts are already inside the subtotal, so
+  `order_discount` alone would understate what was given away.
 
 ## The one unauthenticated endpoint
 

@@ -20,17 +20,33 @@ public sealed record RecordPurchaseRequest
     public DateTime? PurchaseDateUtc { get; init; }
 
     /// <summary>
-    /// Optional. When supplied, the product's sale price is updated and then applies to all
-    /// remaining stock, including units bought earlier at a different cost (FR-011d).
+    /// What a walk-in pays. Writes <c>retail_price</c> — the column a retail sale is quoted from.
+    ///
+    /// <para><b>Required the first time a product is stocked</b> — that is the moment a
+    /// catalogue entry becomes something sellable, and a product on the shelf with no price is
+    /// the one state the counter cannot handle. On a repeat purchase it is optional: omit it and
+    /// the current price stands.</para>
+    ///
+    /// <para>When supplied it applies to ALL remaining stock, including units bought earlier at
+    /// a different cost (FR-011d) — old stock sells at today's price.</para>
     /// </summary>
-    public decimal? NewSalePrice { get; init; }
+    public decimal? NewRetailPrice { get; init; }
+
+    /// <summary>
+    /// What a bulk buyer pays. Optional even on a first purchase: a shop that does not sell
+    /// wholesale should not be made to invent a second price, and a wholesale sale falls back to
+    /// the retail price when none is set.
+    /// </summary>
+    public decimal? NewWholesalePrice { get; init; }
 }
 
 public sealed record RecordPurchaseResult(
     long PurchaseId,
     int NewQuantityOnHand,
     decimal NewCostPrice,
-    decimal NewSupplierPayable);
+    decimal NewSupplierPayable,
+    decimal NewRetailPrice,
+    decimal NewWholesalePrice);
 
 public sealed record RecordSupplierPaymentRequest
 {
@@ -107,9 +123,14 @@ public sealed class PurchaseService : IPurchaseService
             throw new BusinessRuleViolationException("Purchase unit cost must be greater than zero.");
         }
 
-        if (request.NewSalePrice is < 0m)
+        if (request.NewRetailPrice is < 0m)
         {
-            throw new BusinessRuleViolationException("Sale price cannot be negative.");
+            throw new BusinessRuleViolationException("Retail price cannot be negative.");
+        }
+
+        if (request.NewWholesalePrice is < 0m)
+        {
+            throw new BusinessRuleViolationException("Wholesale price cannot be negative.");
         }
 
         var nowUtc = _clock.UtcNow;
@@ -130,13 +151,30 @@ public sealed class PurchaseService : IPurchaseService
             uow, request.SupplierId, request.ProductId, purchaseDate,
             request.UnitCost, request.Quantity, total, userId, nowUtc, cancellationToken);
 
-        // 2 & 3. Stock up; cost overwritten for ALL units on hand.
+        // The first delivery is what turns a catalogue entry into something sellable, so it is
+        // the one that must state a price. Checked against the LOCKED row, after the lock and
+        // before any write, so two first-purchases racing cannot both see "no price yet".
+        var isFirstStocking = product.RetailPrice <= 0m;
+
+        if (isFirstStocking && request.NewRetailPrice is null or <= 0m)
+        {
+            throw new BusinessRuleViolationException(
+                $"'{product.Name}' has no selling price yet. Set the retail price on this " +
+                "purchase — it is what makes the product sellable.");
+        }
+
+        // 2 & 3. Stock up; cost overwritten for ALL units on hand; prices set or left standing.
         var newQuantity = StockRules.NextQuantity(product.QuantityOnHand, request.Quantity, product.Name);
         var newCost = StockRules.NextCostPrice(product.CostPrice, request.UnitCost);
-        var newSalePrice = request.NewSalePrice ?? product.SalePrice;
+
+        // Omitted means "leave it as it is" — a repeat delivery at the same price should not
+        // require the shopkeeper to retype what the shop already knows.
+        var newRetailPrice = request.NewRetailPrice ?? product.RetailPrice;
+        var newWholesalePrice = request.NewWholesalePrice ?? product.WholesalePrice;
 
         await _purchases.UpdateProductStockAndPricingAsync(
-            uow, request.ProductId, newQuantity, newCost, newSalePrice, nowUtc, cancellationToken);
+            uow, request.ProductId, newQuantity, newCost,
+            newRetailPrice, newWholesalePrice, nowUtc, cancellationToken);
 
         // 4. What the shop now owes.
         var newPayable = Round(supplier.PayableBalance + total);
@@ -160,15 +198,22 @@ public sealed class PurchaseService : IPurchaseService
         await AuditAsync(uow, "Supplier", request.SupplierId, "payable_balance",
             supplier.PayableBalance, newPayable, "Purchase", userId, nowUtc, cancellationToken);
 
-        if (newSalePrice != product.SalePrice)
+        if (newRetailPrice != product.RetailPrice)
         {
-            await AuditAsync(uow, "Product", request.ProductId, "sale_price",
-                product.SalePrice, newSalePrice, "Purchase", userId, nowUtc, cancellationToken);
+            await AuditAsync(uow, "Product", request.ProductId, "retail_price",
+                product.RetailPrice, newRetailPrice, "Purchase", userId, nowUtc, cancellationToken);
+        }
+
+        if (newWholesalePrice != product.WholesalePrice)
+        {
+            await AuditAsync(uow, "Product", request.ProductId, "wholesale_price",
+                product.WholesalePrice, newWholesalePrice, "Purchase", userId, nowUtc, cancellationToken);
         }
 
         await uow.CommitAsync(cancellationToken);
 
-        return new RecordPurchaseResult(purchaseId, newQuantity, newCost, newPayable);
+        return new RecordPurchaseResult(
+            purchaseId, newQuantity, newCost, newPayable, newRetailPrice, newWholesalePrice);
     }
 
     public async Task<decimal> RecordSupplierPaymentAsync(

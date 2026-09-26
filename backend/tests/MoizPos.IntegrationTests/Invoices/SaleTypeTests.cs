@@ -50,11 +50,10 @@ public sealed class SaleTypeTests
         return await connection.ExecuteScalarAsync<long>(
             """
             INSERT IGNORE INTO categories (name, created_at_utc) VALUES ('Cables', UTC_TIMESTAMP(6));
+            INSERT IGNORE INTO brands (name, is_local, is_active, created_at_utc) VALUES ('TestBrand', FALSE, TRUE, UTC_TIMESTAMP(6));
             INSERT INTO products
-                (name, category_id, cost_price, wholesale_price, retail_price, sale_price,
-                 quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
-            VALUES (@name, (SELECT id FROM categories WHERE name = 'Cables'), 800, @wholesalePrice,
-                    1200, @salePrice, @quantity, 3, TRUE, UTC_TIMESTAMP(6));
+                (name, category_id, brand_id, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
+            VALUES (@name, (SELECT id FROM categories WHERE name = 'Cables'), (SELECT id FROM brands WHERE name = 'TestBrand'), 800, @wholesalePrice, @salePrice, @quantity, 3, TRUE, UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
             new { name = $"ST {Guid.NewGuid():N}"[..20], salePrice, wholesalePrice, quantity });
@@ -194,16 +193,23 @@ public sealed class SaleTypeTests
     {
         var admin = await ClientAsync(UserRole.Admin);
         var barcode = $"{Random.Shared.NextInt64(1_000_000_000_000, 8_999_999_999_999)}";
-        var categoryId = await _api.EnsureCategoryAsync("Cables");
+        var (categoryId, brandId) = await _api.EnsureCatalogueAsync();
 
-        await admin.PostAsJsonAsync("/api/products", new
+        var created = await admin.PostAsJsonAsync("/api/products", new
         {
             name = $"Scan {Guid.NewGuid():N}"[..20],
             categoryId,
+            brandId,
             barcode,
-            costPrice = 800m, wholesalePrice = 950m, retailPrice = 1200m, salePrice = 1100m,
-            quantityOnHand = 10, minStockThreshold = 3,
+            minStockThreshold = 3,
         });
+
+        var scannedId = (await created.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
+            .Data!.GetProperty("id").GetInt64();
+
+        // Prices and stock arrive with the first delivery, not with the product.
+        await _api.StockProductAsync(
+            scannedId, quantity: 10, salePrice: 1100m, wholesalePrice: 950m);
 
         var scanned = await admin.GetFromJsonAsync<Envelope<JsonElement>>(
             $"/api/products/by-barcode/{barcode}?saleType=Wholesale", Json);

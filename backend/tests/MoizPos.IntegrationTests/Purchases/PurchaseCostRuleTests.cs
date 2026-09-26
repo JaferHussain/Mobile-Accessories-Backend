@@ -50,22 +50,24 @@ public sealed class PurchaseCostRuleTests
             """
             -- Products carry a category foreign key now, so the category has to exist first.
             INSERT IGNORE INTO categories (name, created_at_utc) VALUES ('Cables', UTC_TIMESTAMP(6));
+            INSERT IGNORE INTO brands (name, is_local, is_active, created_at_utc) VALUES ('TestBrand', FALSE, TRUE, UTC_TIMESTAMP(6));
             INSERT INTO products
-                (name, category_id, cost_price, wholesale_price, retail_price, sale_price,
-                 quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
+                (name, category_id, brand_id, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
             VALUES
-                (@name, (SELECT id FROM categories WHERE name = 'Cables'), @costPrice, 0, 0, @salePrice, @quantity, 3, TRUE, UTC_TIMESTAMP(6));
+                (@name, (SELECT id FROM categories WHERE name = 'Cables'), (SELECT id FROM brands WHERE name = 'TestBrand'), @costPrice, 0, @salePrice, @quantity, 3, TRUE, UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
             new { name = $"Cable {Guid.NewGuid():N}"[..20], costPrice, quantity, salePrice });
     }
 
-    private async Task<(int Quantity, decimal CostPrice, decimal SalePrice)> ReadProductAsync(long id)
+    private async Task<(int Quantity, decimal CostPrice, decimal RetailPrice)> ReadProductAsync(long id)
     {
         await using var connection = await _api.OpenDatabaseAsync();
 
+        // Three prices, since 0029: cost, wholesale and retail. retail_price is what a walk-in
+        // is quoted — there is no longer a separate sale_price column.
         return await connection.QuerySingleAsync<(int, decimal, decimal)>(
-            "SELECT quantity_on_hand, cost_price, sale_price FROM products WHERE id = @id;",
+            "SELECT quantity_on_hand, cost_price, retail_price FROM products WHERE id = @id;",
             new { id });
     }
 
@@ -107,6 +109,7 @@ public sealed class PurchaseCostRuleTests
                 ProductId = productId,
                 UnitCost = 800m,
                 Quantity = 10,
+                NewRetailPrice = 1100m,
             },
             userId);
 
@@ -121,6 +124,7 @@ public sealed class PurchaseCostRuleTests
                 ProductId = productId,
                 UnitCost = 850m,
                 Quantity = 10,
+                NewRetailPrice = 1100m,
             },
             userId);
 
@@ -148,7 +152,7 @@ public sealed class PurchaseCostRuleTests
             new RecordPurchaseRequest
             {
                 SupplierId = supplierId, ProductId = productId,
-                UnitCost = 800m, Quantity = 10, NewSalePrice = 1100m,
+                UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m,
             },
             userId);
 
@@ -158,14 +162,14 @@ public sealed class PurchaseCostRuleTests
             new RecordPurchaseRequest
             {
                 SupplierId = supplierId, ProductId = productId,
-                UnitCost = 850m, Quantity = 10, NewSalePrice = 1200m,
+                UnitCost = 850m, Quantity = 10, NewRetailPrice = 1200m,
             },
             userId);
 
         var product = await ReadProductAsync(productId);
 
         // All 15 units — including the 5 bought at 800 — now sell at 1,200 (FR-011d).
-        product.SalePrice.Should().Be(1200m);
+        product.RetailPrice.Should().Be(1200m);
         product.Quantity.Should().Be(15);
     }
 
@@ -179,12 +183,12 @@ public sealed class PurchaseCostRuleTests
 
         await service.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 850m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 850m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await service.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 780m, Quantity = 5 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 780m, Quantity = 5, NewRetailPrice = 1100m },
             userId);
 
         (await ReadProductAsync(productId)).CostPrice.Should().Be(780m);
@@ -204,7 +208,7 @@ public sealed class PurchaseCostRuleTests
 
         var result = await service.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 50 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 50, NewRetailPrice = 1100m },
             userId);
 
         // spec US3 scenario 1: 5 + 50 = 55 in stock, payable up by 40,000.
@@ -222,7 +226,7 @@ public sealed class PurchaseCostRuleTests
 
         await Service().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 50 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 50, NewRetailPrice = 1100m },
             userId);
 
         await using var connection = await _api.OpenDatabaseAsync();
@@ -248,7 +252,7 @@ public sealed class PurchaseCostRuleTests
 
         await Service().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await using var connection = await _api.OpenDatabaseAsync();
@@ -271,7 +275,7 @@ public sealed class PurchaseCostRuleTests
 
         var act = async () => await Service().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = 999_999_999, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = 999_999_999, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await act.Should().ThrowAsync<Exception>();
@@ -288,7 +292,7 @@ public sealed class PurchaseCostRuleTests
 
         var act = async () => await Service().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = 999_999_999, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = 999_999_999, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await act.Should().ThrowAsync<Exception>();
@@ -309,7 +313,7 @@ public sealed class PurchaseCostRuleTests
 
         var act = async () => await Service().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = quantity },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = quantity, NewRetailPrice = 1100m },
             userId);
 
         await act.Should().ThrowAsync<Exception>();
@@ -324,7 +328,7 @@ public sealed class PurchaseCostRuleTests
 
         var act = async () => await Service().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 0m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 0m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await act.Should().ThrowAsync<Exception>();
@@ -344,7 +348,7 @@ public sealed class PurchaseCostRuleTests
 
         await service.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         var newPayable = await service.RecordSupplierPaymentAsync(
@@ -365,7 +369,7 @@ public sealed class PurchaseCostRuleTests
 
         await service.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 100m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 100m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         var act = async () => await service.RecordSupplierPaymentAsync(
@@ -387,7 +391,7 @@ public sealed class PurchaseCostRuleTests
 
         await service.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 100m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 100m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         var newPayable = await service.RecordSupplierPaymentAsync(
@@ -416,12 +420,12 @@ public sealed class PurchaseCostRuleTests
 
         await service.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await service.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 850m, Quantity = 4 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 850m, Quantity = 4, NewRetailPrice = 1100m },
             userId);
 
         await service.RecordSupplierPaymentAsync(

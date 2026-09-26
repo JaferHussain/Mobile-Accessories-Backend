@@ -9,15 +9,16 @@ namespace MoizPos.Infrastructure.Repositories;
 public sealed class PurchaseRepository : IPurchaseRepository
 {
     private const string SelectColumns = """
-        id                AS Id,
-        supplier_id       AS SupplierId,
-        product_id        AS ProductId,
-        purchase_date_utc AS PurchaseDateUtc,
-        unit_cost         AS UnitCost,
-        quantity          AS Quantity,
-        total             AS Total,
-        returned_qty      AS ReturnedQty,
-        user_id           AS UserId
+        pu.id                AS Id,
+        pu.supplier_id       AS SupplierId,
+        pu.product_id        AS ProductId,
+        p.name               AS ProductName,
+        pu.purchase_date_utc AS PurchaseDateUtc,
+        pu.unit_cost         AS UnitCost,
+        pu.quantity          AS Quantity,
+        pu.total             AS Total,
+        pu.returned_qty      AS ReturnedQty,
+        pu.user_id           AS UserId
         """;
 
     private readonly IDbConnectionFactory _connectionFactory;
@@ -29,6 +30,7 @@ public sealed class PurchaseRepository : IPurchaseRepository
         long? supplierId,
         DateTime? fromUtc,
         DateTime? toUtc,
+        string? productSearch,
         int page,
         int pageSize,
         CancellationToken cancellationToken = default)
@@ -37,18 +39,25 @@ public sealed class PurchaseRepository : IPurchaseRepository
 
         if (supplierId is not null)
         {
-            where.Append(" AND supplier_id = @supplierId");
+            where.Append(" AND pu.supplier_id = @supplierId");
         }
 
         if (fromUtc is not null)
         {
-            where.Append(" AND purchase_date_utc >= @fromUtc");
+            where.Append(" AND pu.purchase_date_utc >= @fromUtc");
         }
 
         if (toUtc is not null)
         {
             // Half-open: the caller's range end is exclusive (research.md R6).
-            where.Append(" AND purchase_date_utc < @toUtc");
+            where.Append(" AND pu.purchase_date_utc < @toUtc");
+        }
+
+        // "Return item": find which purchase to return against by product name, the same way
+        // sale returns can, instead of scrolling every purchase from every supplier.
+        if (!string.IsNullOrWhiteSpace(productSearch))
+        {
+            where.Append(" AND p.name LIKE @productSearch");
         }
 
         await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
@@ -56,14 +65,20 @@ public sealed class PurchaseRepository : IPurchaseRepository
         await using var reader = await connection.QueryMultipleAsync(
             $"""
              SELECT {SelectColumns}
-             FROM purchases
+             FROM purchases pu
+             JOIN products p ON p.id = pu.product_id
              {where}
-             ORDER BY purchase_date_utc DESC, id DESC
+             ORDER BY pu.purchase_date_utc DESC, pu.id DESC
              LIMIT @limit OFFSET @offset;
 
-             SELECT COUNT(*) FROM purchases {where};
+             SELECT COUNT(*) FROM purchases pu JOIN products p ON p.id = pu.product_id {where};
              """,
-            new { supplierId, fromUtc, toUtc, limit = pageSize, offset = (page - 1) * pageSize });
+            new
+            {
+                supplierId, fromUtc, toUtc,
+                productSearch = $"%{productSearch?.Trim()}%",
+                limit = pageSize, offset = (page - 1) * pageSize,
+            });
 
         var items = (await reader.ReadAsync<Purchase>()).AsList();
         var total = await reader.ReadSingleAsync<int>();

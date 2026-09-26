@@ -175,7 +175,8 @@ public sealed class RoleEnforcementTests
         await admin.PostAsJsonAsync("/api/products", new
         {
             name = $"Guard {Guid.NewGuid():N}"[..20],
-            categoryId = await _api.EnsureCategoryAsync("Cables"),
+            categoryId = (await _api.EnsureCatalogueAsync()).CategoryId,
+            brandId = (await _api.EnsureCatalogueAsync()).BrandId,
             // Distinctive decimals: a bare "811" collides with ids and timestamps by chance,
             // but "811.37" appears in a response only if the cost itself leaked.
             costPrice = 811.37m,
@@ -230,13 +231,16 @@ public sealed class RoleEnforcementTests
         var created = await admin.PostAsJsonAsync("/api/products", new
         {
             name = $"Sellable {Guid.NewGuid():N}"[..20],
-            categoryId = await _api.EnsureCategoryAsync("Cables"),
-            costPrice = 800m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 1000m,
-            quantityOnHand = 10, minStockThreshold = 3,
+            categoryId = (await _api.EnsureCatalogueAsync()).CategoryId,
+            brandId = (await _api.EnsureCatalogueAsync()).BrandId,
+            minStockThreshold = 3,
         });
 
         var productId = (await created.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
             .Data!.GetProperty("id").GetInt64();
+
+        // Prices and stock arrive with the first delivery, not with the product.
+        await _api.StockProductAsync(productId, quantity: 10, salePrice: 1000m);
 
         var staff = await ClientAsync(UserRole.Staff);
 
@@ -297,13 +301,16 @@ public sealed class RoleEnforcementTests
         var created = await admin.PostAsJsonAsync("/api/products", new
         {
             name = $"Partial {Guid.NewGuid():N}"[..20],
-            categoryId = await _api.EnsureCategoryAsync("Cables"),
-            costPrice = 800m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 1000m,
-            quantityOnHand = 10, minStockThreshold = 3,
+            categoryId = (await _api.EnsureCatalogueAsync()).CategoryId,
+            brandId = (await _api.EnsureCatalogueAsync()).BrandId,
+            minStockThreshold = 3,
         });
 
         var productId = (await created.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
             .Data!.GetProperty("id").GetInt64();
+
+        // Prices and stock arrive with the first delivery, not with the product.
+        await _api.StockProductAsync(productId, quantity: 10, salePrice: 1000m);
 
         var staff = await ClientAsync(UserRole.Staff);
 

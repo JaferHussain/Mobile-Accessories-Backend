@@ -17,12 +17,9 @@ public sealed class ProductValidatorTests
         BrandId = 2,
         Model = "CATZ-01",
         Barcode = "8901234567890",
-        CostPrice = 800m,
-        WholesalePrice = 950m,
-        RetailPrice = 1200m,
-        SalePrice = 1100m,
-        QuantityOnHand = 10,
         MinStockThreshold = 3,
+        // No prices and no quantity: a product is a catalogue entry, and both arrive with its
+        // first purchase.
     };
 
     [Fact]
@@ -71,33 +68,36 @@ public sealed class ProductValidatorTests
     }
 
     [Fact]
-    public void Allows_an_absent_barcode_brand_and_model()
+    public void Allows_an_absent_barcode_and_model()
     {
-        // Unbranded generic stock is normal in this trade.
-        var request = Valid() with { Barcode = null, BrandId = null, Model = null };
+        // Plenty of generic stock has neither printed on it.
+        var request = Valid() with { Barcode = null, Model = null };
 
         _validator.TestValidate(request).ShouldNotHaveAnyValidationErrors();
     }
 
     [Fact]
-    public void Rejects_a_negative_cost_price()
+    public void Requires_a_brand()
     {
-        _validator.TestValidate(Valid() with { CostPrice = -1m })
-            .ShouldHaveValidationErrorFor(x => x.CostPrice);
+        // Was optional until 0027. The owner's rule is that goods with no well-known maker are
+        // sold under the shop's own general "Local" brand — so every product has one, and that is
+        // what lets the form ask for the brand first and offer only its categories.
+        _validator.TestValidate(Valid() with { BrandId = 0 })
+            .ShouldHaveValidationErrorFor(x => x.BrandId);
     }
 
     [Fact]
-    public void Rejects_a_negative_sale_price()
+    public void Carries_no_price_or_quantity_at_all()
     {
-        _validator.TestValidate(Valid() with { SalePrice = -0.01m })
-            .ShouldHaveValidationErrorFor(x => x.SalePrice);
-    }
+        // Not "accepts a zero price" — the fields are ABSENT from the request. Two ways to price
+        // a product is one more than the shop can keep straight, so the only way is a purchase.
+        var names = typeof(ProductUpsertRequest).GetProperties().Select(p => p.Name).ToList();
 
-    [Fact]
-    public void Rejects_a_negative_quantity()
-    {
-        _validator.TestValidate(Valid() with { QuantityOnHand = -1 })
-            .ShouldHaveValidationErrorFor(x => x.QuantityOnHand);
+        names.Should().NotContain("CostPrice");
+        names.Should().NotContain("SalePrice");
+        names.Should().NotContain("RetailPrice");
+        names.Should().NotContain("WholesalePrice");
+        names.Should().NotContain("QuantityOnHand");
     }
 
     [Fact]
@@ -108,26 +108,10 @@ public sealed class ProductValidatorTests
     }
 
     [Fact]
-    public void Allows_zero_prices_and_quantities()
+    public void Allows_a_zero_reorder_threshold()
     {
-        var request = Valid() with
-        {
-            CostPrice = 0m,
-            WholesalePrice = 0m,
-            RetailPrice = 0m,
-            SalePrice = 0m,
-            QuantityOnHand = 0,
-            MinStockThreshold = 0,
-        };
-
-        _validator.TestValidate(request).ShouldNotHaveAnyValidationErrors();
-    }
-
-    [Fact]
-    public void Allows_a_sale_price_below_cost_because_the_shopkeeper_may_choose_to()
-    {
-        // Clearing old stock at a loss is a real decision, not a data error.
-        _validator.TestValidate(Valid() with { CostPrice = 800m, SalePrice = 700m })
+        // Plenty of lines are not worth reordering automatically.
+        _validator.TestValidate(Valid() with { MinStockThreshold = 0 })
             .ShouldNotHaveAnyValidationErrors();
     }
 }

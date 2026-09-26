@@ -20,7 +20,8 @@ public sealed class PurchaseWriteRepository : IPurchaseWriteRepository
                    name AS Name,
                    quantity_on_hand AS QuantityOnHand,
                    cost_price AS CostPrice,
-                   sale_price AS SalePrice
+                   retail_price AS RetailPrice,
+                   wholesale_price AS WholesalePrice
             FROM products
             WHERE id = @productId
             FOR UPDATE;
@@ -76,7 +77,8 @@ public sealed class PurchaseWriteRepository : IPurchaseWriteRepository
         long productId,
         int newQuantity,
         decimal newCostPrice,
-        decimal newSalePrice,
+        decimal newRetailPrice,
+        decimal newWholesalePrice,
         DateTime nowUtc,
         CancellationToken cancellationToken = default)
     {
@@ -85,11 +87,12 @@ public sealed class PurchaseWriteRepository : IPurchaseWriteRepository
             UPDATE products
             SET quantity_on_hand = @newQuantity,
                 cost_price = @newCostPrice,
-                sale_price = @newSalePrice,
+                retail_price = @newRetailPrice,
+                wholesale_price = @newWholesalePrice,
                 updated_at_utc = @nowUtc
             WHERE id = @productId;
             """,
-            new { productId, newQuantity, newCostPrice, newSalePrice, nowUtc },
+            new { productId, newQuantity, newCostPrice, newRetailPrice, newWholesalePrice, nowUtc },
             unitOfWork.Transaction);
     }
 

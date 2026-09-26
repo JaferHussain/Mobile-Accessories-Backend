@@ -19,6 +19,12 @@ public sealed record CustomerUpsertRequest
     public string? MobileNumber { get; init; }
 
     public string? Address { get; init; }
+
+    /// <summary>
+    /// A standing label, Admin-only to set (FR-105). Null lets a Staff quick-create (FR-017)
+    /// omit it entirely rather than send a value the server will ignore.
+    /// </summary>
+    public SaleType? SaleType { get; init; }
 }
 
 public sealed record ReceiveCustomerPaymentRequest
@@ -168,6 +174,7 @@ public sealed class CustomersController : ControllerBase
     public async Task<IActionResult> Search(
         [FromQuery] string? search,
         [FromQuery] bool withBalanceOnly = false,
+        [FromQuery] SaleType? saleType = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25,
         CancellationToken cancellationToken = default)
@@ -175,7 +182,7 @@ public sealed class CustomersController : ControllerBase
         var (normalizedPage, normalizedSize) = PagedResult<Customer>.Normalize(page, pageSize);
 
         var (items, total) = await _customers.SearchAsync(
-            search, withBalanceOnly, normalizedPage, normalizedSize, cancellationToken);
+            search, withBalanceOnly, saleType, normalizedPage, normalizedSize, cancellationToken);
 
         return Ok(ApiResponse<PagedResult<Customer>>.Ok(
             new PagedResult<Customer>(items, normalizedPage, normalizedSize, total)));
@@ -204,6 +211,13 @@ public sealed class CustomersController : ControllerBase
                     ? null
                     : request.MobileNumber.Trim(),
                 Address = string.IsNullOrWhiteSpace(request.Address) ? null : request.Address.Trim(),
+
+                // Admin-only (FR-105). A Staff request's SaleType is silently ignored rather
+                // than rejected — quick-creating a customer mid-sale (FR-017) must keep working
+                // exactly as it did before this field existed.
+                SaleType = CurrentUser.Role(User) == UserRole.Admin && request.SaleType is not null
+                    ? request.SaleType.Value
+                    : Domain.Enums.SaleType.Retail,
             },
             cancellationToken);
 
@@ -227,8 +241,13 @@ public sealed class CustomersController : ControllerBase
             : request.MobileNumber.Trim();
         existing.Address = string.IsNullOrWhiteSpace(request.Address) ? null : request.Address.Trim();
 
+        if (CurrentUser.Role(User) == UserRole.Admin && request.SaleType is not null)
+        {
+            existing.SaleType = request.SaleType.Value;
+        }
+
         // OutstandingBalance is untouched: it moves only through invoice, payment and
-        // sale-return transactions, never by editing contact details.
+        // sale-return transactions, never by editing contact details or the sale-type label.
         await _customers.UpdateAsync(existing, cancellationToken);
 
         return Ok(ApiResponse<Customer>.Ok((await _customers.FindByIdAsync(id, cancellationToken))!));

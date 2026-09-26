@@ -173,6 +173,7 @@ public interface IPurchaseRepository
         long? supplierId,
         DateTime? fromUtc,
         DateTime? toUtc,
+        string? productSearch,
         int page,
         int pageSize,
         CancellationToken cancellationToken = default);

@@ -13,7 +13,15 @@ public sealed record ProductStockSnapshot
 
     public decimal CostPrice { get; init; }
 
-    public decimal SalePrice { get; init; }
+    /// <summary>What a walk-in pays. Zero means the product has never been stocked.</summary>
+    public decimal RetailPrice { get; init; }
+
+    /// <summary>
+    /// Read under the same lock as the rest. A repeat purchase that omits the wholesale price
+    /// leaves the current one standing, and "current" has to come from the locked row — taking
+    /// it from an earlier unlocked read would let a concurrent purchase's price win by accident.
+    /// </summary>
+    public decimal WholesalePrice { get; init; }
 }
 
 /// <summary>A supplier's running payable, read under a row lock.</summary>
@@ -58,14 +66,19 @@ public interface IPurchaseWriteRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Applies the new quantity, the overwritten cost, and the sale price in one statement.
+    /// Applies the new quantity, the overwritten cost and both selling prices in ONE statement.
+    ///
+    /// <para>One statement on purpose: stock and price arrive together on a delivery, and a
+    /// product that had its quantity raised but not its price — or the reverse — is exactly the
+    /// half-stocked state the counter cannot sell from.</para>
     /// </summary>
     Task UpdateProductStockAndPricingAsync(
         IUnitOfWork unitOfWork,
         long productId,
         int newQuantity,
         decimal newCostPrice,
-        decimal newSalePrice,
+        decimal newRetailPrice,
+        decimal newWholesalePrice,
         DateTime nowUtc,
         CancellationToken cancellationToken = default);
 

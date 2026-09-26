@@ -46,6 +46,57 @@ public sealed class DocumentTokenRepository : IDocumentTokenRepository
             });
     }
 
+    /// <summary>The columns the owner reads. token_hash is deliberately absent.</summary>
+    private const string SummaryColumns = """
+        t.id                AS Id,
+        t.created_at_utc    AS CreatedAtUtc,
+        u.full_name         AS CreatedByUserName,
+        t.expires_at_utc    AS ExpiresAtUtc,
+        t.revoked_at_utc    AS RevokedAtUtc,
+        t.last_accessed_utc AS LastAccessedAtUtc,
+        t.access_count      AS AccessCount,
+        (t.revoked_at_utc IS NULL AND t.expires_at_utc > @nowUtc) AS IsUsable
+        """;
+
+    public async Task<IReadOnlyList<ShareLinkSummary>> ListForDocumentAsync(
+        DocumentType documentType,
+        long referenceId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
+
+        var rows = await connection.QueryAsync<ShareLinkSummary>(
+            $"""
+             SELECT {SummaryColumns}
+             FROM document_tokens t
+             JOIN users u ON u.id = t.created_by_user_id
+             WHERE t.document_type = @documentType AND t.reference_id = @referenceId
+             ORDER BY t.id DESC;
+             """,
+            new { documentType = documentType.ToString(), referenceId, nowUtc });
+
+        return rows.AsList();
+    }
+
+    public async Task<ShareLinkSummary?> FindByIdAsync(
+        long id,
+        DateTime nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
+
+        return await connection.QuerySingleOrDefaultAsync<ShareLinkSummary>(
+            $"""
+             SELECT {SummaryColumns}
+             FROM document_tokens t
+             JOIN users u ON u.id = t.created_by_user_id
+             WHERE t.id = @id
+             LIMIT 1;
+             """,
+            new { id, nowUtc });
+    }
+
     public async Task<StoredDocumentToken?> FindAsync(
         string tokenHash,
         CancellationToken cancellationToken = default)
@@ -119,6 +170,26 @@ public sealed class CustomerPaymentReadRepository : ICustomerPaymentReadReposito
             LIMIT 1;
             """,
             new { id });
+    }
+
+    public async Task<decimal?> BalanceAfterPaymentAsync(
+        long paymentId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
+
+        // The entry this payment wrote, and the balance it left behind. Read from the ledger
+        // rather than from customers.outstanding_balance, which has already moved on if the
+        // customer has bought again since.
+        return await connection.ExecuteScalarAsync<decimal?>(
+            """
+            SELECT balance_after
+            FROM ledger_entries
+            WHERE entry_type = 'Payment' AND reference_id = @paymentId
+            ORDER BY id
+            LIMIT 1;
+            """,
+            new { paymentId });
     }
 }
 

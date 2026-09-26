@@ -12,6 +12,12 @@ public sealed class SupplierRepository : ISupplierRepository
         name            AS Name,
         contact_number  AS ContactNumber,
         address         AS Address,
+        cnic            AS Cnic,
+        email           AS Email,
+        bank_name           AS BankName,
+        bank_account_title  AS BankAccountTitle,
+        bank_account_number AS BankAccountNumber,
+        notes           AS Notes,
         payable_balance AS PayableBalance,
         is_active       AS IsActive
         """;
@@ -70,8 +76,14 @@ public sealed class SupplierRepository : ISupplierRepository
 
         return await connection.ExecuteScalarAsync<long>(
             """
-            INSERT INTO suppliers (name, contact_number, address, payable_balance, is_active, created_at_utc)
-            VALUES (@Name, @ContactNumber, @Address, 0, TRUE, UTC_TIMESTAMP(6));
+            INSERT INTO suppliers (
+                name, contact_number, address, cnic, email,
+                bank_name, bank_account_title, bank_account_number, notes,
+                payable_balance, is_active, created_at_utc)
+            VALUES (
+                @Name, @ContactNumber, @Address, @Cnic, @Email,
+                @BankName, @BankAccountTitle, @BankAccountNumber, @Notes,
+                0, TRUE, UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
             supplier);
@@ -89,6 +101,12 @@ public sealed class SupplierRepository : ISupplierRepository
             SET name = @Name,
                 contact_number = @ContactNumber,
                 address = @Address,
+                cnic = @Cnic,
+                email = @Email,
+                bank_name = @BankName,
+                bank_account_title = @BankAccountTitle,
+                bank_account_number = @BankAccountNumber,
+                notes = @Notes,
                 updated_at_utc = UTC_TIMESTAMP(6)
             WHERE id = @Id;
             """,

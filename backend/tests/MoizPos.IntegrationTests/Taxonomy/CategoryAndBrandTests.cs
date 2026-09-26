@@ -110,18 +110,23 @@ public sealed class CategoryAndBrandTests
         var categoryId = (await created.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
             .Data!.GetProperty("id").GetInt64();
 
+        var brandId = await _api.EnsureBrandAsync(Unique("RenameBrand"));
+
         var product = await admin.PostAsJsonAsync("/api/products", new
         {
             name = Unique("Prod"),
             categoryId,
-            costPrice = 800m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 1000m,
-            quantityOnHand = 5, minStockThreshold = 1,
+            brandId,
+            minStockThreshold = 1,
         });
 
         product.StatusCode.Should().Be(HttpStatusCode.Created);
 
         var productId = (await product.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
             .Data!.GetProperty("id").GetInt64();
+
+        // Prices and stock arrive with the first delivery, not with the product.
+        await _api.StockProductAsync(productId, quantity: 5, salePrice: 1000m);
 
         var renamed = Unique("New");
         await admin.PutAsJsonAsync($"/api/categories/{categoryId}", new { name = renamed });
@@ -142,12 +147,14 @@ public sealed class CategoryAndBrandTests
         var categoryId = (await created.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
             .Data!.GetProperty("id").GetInt64();
 
+        var brandId = await _api.EnsureBrandAsync(Unique("CountBrand"));
+
         await admin.PostAsJsonAsync("/api/products", new
         {
             name = Unique("Prod"),
             categoryId,
-            costPrice = 1m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 2m,
-            quantityOnHand = 1, minStockThreshold = 1,
+            brandId,
+            minStockThreshold = 1,
         });
 
         var fetched = await admin.GetFromJsonAsync<Envelope<JsonElement>>(
@@ -166,16 +173,22 @@ public sealed class CategoryAndBrandTests
         var categoryId = (await created.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
             .Data!.GetProperty("id").GetInt64();
 
+        var brandId = await _api.EnsureBrandAsync(Unique("RetireBrand"));
+
         var product = await admin.PostAsJsonAsync("/api/products", new
         {
             name = Unique("Prod"),
             categoryId,
-            costPrice = 1m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 2m,
-            quantityOnHand = 4, minStockThreshold = 1,
+            brandId,
+            minStockThreshold = 1,
         });
 
         var productId = (await product.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!
             .Data!.GetProperty("id").GetInt64();
+
+        // Four on the shelf — the point of the test is that retiring a label does not destroy
+        // stock the shop is holding, so it has to be holding some.
+        await _api.StockProductAsync(productId, quantity: 4, costPrice: 1m, salePrice: 2m);
 
         var deleted = await admin.DeleteAsync($"/api/categories/{categoryId}");
         deleted.StatusCode.Should().Be(HttpStatusCode.NoContent);
@@ -191,8 +204,8 @@ public sealed class CategoryAndBrandTests
         {
             name = Unique("Prod"),
             categoryId,
-            costPrice = 1m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 2m,
-            quantityOnHand = 1, minStockThreshold = 1,
+            brandId,
+            minStockThreshold = 1,
         });
 
         newProduct.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
@@ -207,8 +220,8 @@ public sealed class CategoryAndBrandTests
         {
             name = Unique("Orphan"),
             categoryId = 999_999_999L,
-            costPrice = 1m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 2m,
-            quantityOnHand = 1, minStockThreshold = 1,
+            brandId = await _api.EnsureBrandAsync(Unique("OrphanBrand")),
+            minStockThreshold = 1,
         });
 
         // A clear 404, not the 500 the raw foreign key would produce.
@@ -223,8 +236,7 @@ public sealed class CategoryAndBrandTests
         var response = await admin.PostAsJsonAsync("/api/products", new
         {
             name = Unique("NoCat"),
-            costPrice = 1m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 2m,
-            quantityOnHand = 1, minStockThreshold = 1,
+            minStockThreshold = 1,
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -335,25 +347,23 @@ public sealed class CategoryAndBrandTests
     }
 
     [Fact]
-    public async Task A_product_may_have_no_brand_at_all()
+    public async Task A_product_must_name_a_brand()
     {
         var admin = await ClientAsync(UserRole.Admin);
         var categoryId = await _api.EnsureCategoryAsync("Cables");
 
-        // Unbranded generic stock is normal in this trade, so brand stays optional.
+        // Reverses A_product_may_have_no_brand_at_all, which held until 0027. The owner's rule
+        // is now that anything without a well-known maker is sold under the shop's own general
+        // "Local" brand — so unbranded stock is filed, not exempt. That is also what makes the
+        // product form able to ask for the brand first and offer only its categories.
         var response = await admin.PostAsJsonAsync("/api/products", new
         {
             name = Unique("Generic"),
             categoryId,
-            brandId = (long?)null,
-            costPrice = 1m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 2m,
-            quantityOnHand = 1, minStockThreshold = 1,
+            minStockThreshold = 1,
         });
 
-        response.StatusCode.Should().Be(HttpStatusCode.Created);
-
-        var created = (await response.Content.ReadFromJsonAsync<Envelope<JsonElement>>(Json))!.Data!;
-        created.GetProperty("brand").ValueKind.Should().Be(JsonValueKind.Null);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact]
@@ -370,8 +380,7 @@ public sealed class CategoryAndBrandTests
             name,
             categoryId,
             brandId,
-            costPrice = 1m, wholesalePrice = 0m, retailPrice = 0m, salePrice = 2m,
-            quantityOnHand = 1, minStockThreshold = 1,
+            minStockThreshold = 1,
         });
 
         var byCategory = await admin.GetFromJsonAsync<Envelope<JsonElement>>(

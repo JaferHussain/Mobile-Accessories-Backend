@@ -56,20 +56,22 @@ public sealed class ProductEndpointsTests
     /// through the taxonomy modules rather than posting free text.
     /// </summary>
     private async Task<object> NewProductAsync(
-        string name, string? barcode = null, int quantity = 10) => new
+        string name, string? barcode = null)
     {
-        name,
-        categoryId = await _api.EnsureCategoryAsync("Cables"),
-        brandId = await _api.EnsureBrandAsync("Baseus"),
-        model = "CATZ-01",
-        barcode,
-        costPrice = 800m,
-        wholesalePrice = 950m,
-        retailPrice = 1200m,
-        salePrice = 1100m,
-        quantityOnHand = quantity,
-        minStockThreshold = 3,
-    };
+        var (categoryId, brandId) = await _api.EnsureCatalogueAsync("Cables", "Baseus");
+
+        // Identity only. Prices and quantity are a purchase's to set, so they are not on this
+        // request at all — tests that need something sellable stock it afterwards.
+        return new
+        {
+            name,
+            categoryId,
+            brandId,
+            model = "CATZ-01",
+            barcode,
+            minStockThreshold = 3,
+        };
+    }
 
     private static string Unique(string prefix) => $"{prefix} {Guid.NewGuid():N}"[..24];
 
@@ -177,11 +179,16 @@ public sealed class ProductEndpointsTests
         var admin = await ClientAsync(UserRole.Admin);
         var name = Unique("LowCable");
 
-        // Threshold 3, quantity 3 -> at the threshold, which counts as low (FR-004).
-        var created = await admin.PostAsJsonAsync("/api/products", await NewProductAsync(name, quantity: 3));
-        var body = await created.Content.ReadFromJsonAsync<Envelope<ProductBody>>(Json);
+        var created = await admin.PostAsJsonAsync("/api/products", await NewProductAsync(name));
+        var id = (await created.Content.ReadFromJsonAsync<Envelope<ProductBody>>(Json))!.Data!.Id;
 
-        body!.Data!.IsLowStock.Should().BeTrue();
+        // Threshold 3, quantity 3 -> at the threshold, which counts as low (FR-004). Stocked
+        // separately now, because a product is created empty.
+        await _api.StockProductAsync(id, quantity: 3);
+
+        var refetched = await admin.GetFromJsonAsync<Envelope<ProductBody>>($"/api/products/{id}", Json);
+
+        refetched!.Data!.IsLowStock.Should().BeTrue();
     }
 
     [Fact]
@@ -189,8 +196,13 @@ public sealed class ProductEndpointsTests
     {
         var admin = await ClientAsync(UserRole.Admin);
 
-        await admin.PostAsJsonAsync("/api/products", await NewProductAsync(Unique("LowCable"), quantity: 2));
-        await admin.PostAsJsonAsync("/api/products", await NewProductAsync(Unique("FullCable"), quantity: 500));
+        var low = await admin.PostAsJsonAsync("/api/products", await NewProductAsync(Unique("LowCable")));
+        var full = await admin.PostAsJsonAsync("/api/products", await NewProductAsync(Unique("FullCable")));
+
+        await _api.StockProductAsync(
+            (await low.Content.ReadFromJsonAsync<Envelope<ProductBody>>(Json))!.Data!.Id, quantity: 2);
+        await _api.StockProductAsync(
+            (await full.Content.ReadFromJsonAsync<Envelope<ProductBody>>(Json))!.Data!.Id, quantity: 500);
 
         var response = await admin.GetAsync("/api/products?lowStockOnly=true&pageSize=100");
         var body = await response.Content.ReadFromJsonAsync<Envelope<Paged<ProductBody>>>(Json);
@@ -260,13 +272,19 @@ public sealed class ProductEndpointsTests
     public async Task Updating_a_product_does_not_change_its_stock_or_cost()
     {
         var admin = await ClientAsync(UserRole.Admin);
-        var created = await admin.PostAsJsonAsync("/api/products", await NewProductAsync(Unique("Cable"), quantity: 10));
+        var created = await admin.PostAsJsonAsync("/api/products", await NewProductAsync(Unique("Cable")));
         var id = (await created.Content.ReadFromJsonAsync<Envelope<ProductBody>>(Json))!.Data!.Id;
 
-        // Attempt to smuggle a new quantity and cost through the edit form.
+        // Priced and stocked by its first delivery, which is the only thing that can do either.
+        await _api.StockProductAsync(id, quantity: 10, costPrice: 800m, salePrice: 1100m);
+
+        var (categoryId, brandId) = await _api.EnsureCatalogueAsync("Cables", "Baseus");
+
+        // Attempt to smuggle a new quantity and cost through the edit form. The fields are not
+        // even on the request any more, so they are ignored rather than applied.
         await admin.PutAsJsonAsync($"/api/products/{id}", new
         {
-            name = "Renamed Cable", categoryId = await _api.EnsureCategoryAsync("Cables"),
+            name = "Renamed Cable", categoryId, brandId,
             costPrice = 1m, wholesalePrice = 10m, retailPrice = 20m, salePrice = 30m,
             quantityOnHand = 9999, minStockThreshold = 5,
         });

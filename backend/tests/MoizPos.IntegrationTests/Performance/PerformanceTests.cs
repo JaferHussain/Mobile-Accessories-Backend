@@ -80,12 +80,9 @@ public sealed class PerformanceTests
         await connection.ExecuteAsync(
             """
             INSERT INTO products
-                (name, category_id, brand_id, model, barcode, cost_price, wholesale_price,
-                 retail_price, sale_price, quantity_on_hand, min_stock_threshold,
-                 is_active, created_at_utc)
+                (name, category_id, brand_id, model, barcode, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
             VALUES
-                (@name, @categoryId, @brandId, @model, @barcode, @costPrice, 0,
-                 0, @salePrice, @quantity, @threshold, TRUE, UTC_TIMESTAMP(6));
+                (@name, @categoryId, @brandId, @model, @barcode, @costPrice, 0, @salePrice, @quantity, @threshold, TRUE, UTC_TIMESTAMP(6));
             """,
             rows);
     }

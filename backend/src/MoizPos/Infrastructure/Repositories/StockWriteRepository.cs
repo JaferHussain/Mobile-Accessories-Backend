@@ -18,7 +18,7 @@ public sealed class StockWriteRepository : IStockWriteRepository
                    name AS Name,
                    quantity_on_hand AS QuantityOnHand,
                    cost_price AS CostPrice,
-                   sale_price AS SalePrice
+                   retail_price AS RetailPrice
             FROM products
             WHERE id = @productId
             FOR UPDATE;

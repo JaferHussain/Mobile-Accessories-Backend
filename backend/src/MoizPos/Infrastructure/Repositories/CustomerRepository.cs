@@ -13,6 +13,7 @@ public sealed class CustomerRepository : ICustomerRepository
         name                AS Name,
         mobile_number       AS MobileNumber,
         address             AS Address,
+        sale_type           AS SaleType,
         outstanding_balance AS OutstandingBalance,
         is_active           AS IsActive
         """;
@@ -25,6 +26,7 @@ public sealed class CustomerRepository : ICustomerRepository
     public async Task<(IReadOnlyList<Customer> Items, int TotalItems)> SearchAsync(
         string? search,
         bool withBalanceOnly,
+        SaleType? saleType,
         int page,
         int pageSize,
         CancellationToken cancellationToken = default)
@@ -39,6 +41,11 @@ public sealed class CustomerRepository : ICustomerRepository
         if (withBalanceOnly)
         {
             filter += " AND outstanding_balance <> 0";
+        }
+
+        if (saleType is not null)
+        {
+            filter += " AND sale_type = @saleType";
         }
 
         await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
@@ -56,6 +63,7 @@ public sealed class CustomerRepository : ICustomerRepository
             new
             {
                 search = $"%{search?.Trim()}%",
+                saleType = saleType?.ToString(),
                 limit = pageSize,
                 offset = (page - 1) * pageSize,
             });
@@ -80,11 +88,22 @@ public sealed class CustomerRepository : ICustomerRepository
 
         return await connection.ExecuteScalarAsync<long>(
             """
-            INSERT INTO customers (name, mobile_number, address, outstanding_balance, is_active, created_at_utc)
-            VALUES (@Name, @MobileNumber, @Address, 0, TRUE, UTC_TIMESTAMP(6));
+            INSERT INTO customers (name, mobile_number, address, sale_type, outstanding_balance, is_active, created_at_utc)
+            VALUES (@Name, @MobileNumber, @Address, @saleType, 0, TRUE, UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
-            customer);
+            new
+            {
+                customer.Name,
+                customer.MobileNumber,
+                customer.Address,
+
+                // Dapper writes an unmapped enum as its underlying int by default, which the
+                // sale_type CHECK constraint rejects outright — the column is a string, like
+                // every other enum column in this schema (see payment_method, sale_type on
+                // invoices), so it is spelled out explicitly here, the same way.
+                saleType = customer.SaleType.ToString(),
+            });
     }
 
     public async Task UpdateAsync(Customer customer, CancellationToken cancellationToken = default)
@@ -99,10 +118,18 @@ public sealed class CustomerRepository : ICustomerRepository
             SET name = @Name,
                 mobile_number = @MobileNumber,
                 address = @Address,
+                sale_type = @saleType,
                 updated_at_utc = UTC_TIMESTAMP(6)
             WHERE id = @Id;
             """,
-            customer);
+            new
+            {
+                customer.Id,
+                customer.Name,
+                customer.MobileNumber,
+                customer.Address,
+                saleType = customer.SaleType.ToString(),
+            });
     }
 }
 
@@ -121,6 +148,9 @@ public sealed class InvoiceReadRepository : IInvoiceReadRepository
         i.amount_remaining AS AmountRemaining,
         i.net_amount       AS NetAmount,
         i.payment_method   AS PaymentMethod,
+        i.payment_proof_path AS PaymentProofPath,
+        i.payment_account_number AS PaymentAccountNumber,
+        i.payment_transaction_id AS PaymentTransactionId,
         i.user_id          AS UserId
         """;
 
@@ -128,6 +158,18 @@ public sealed class InvoiceReadRepository : IInvoiceReadRepository
 
     public InvoiceReadRepository(IDbConnectionFactory connectionFactory) =>
         _connectionFactory = connectionFactory;
+
+    public async Task SetPaymentProofPathAsync(
+        long id,
+        string paymentProofPath,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
+
+        await connection.ExecuteAsync(
+            "UPDATE invoices SET payment_proof_path = @paymentProofPath WHERE id = @id;",
+            new { id, paymentProofPath });
+    }
 
     public async Task<InvoiceWithItems?> FindByIdAsync(
         long id,
@@ -165,7 +207,7 @@ public sealed class InvoiceReadRepository : IInvoiceReadRepository
         return new InvoiceWithItems(invoice.ToInvoice(), items, invoice.CustomerName);
     }
 
-    public async Task<(IReadOnlyList<Invoice> Items, int TotalItems)> SearchAsync(
+    public async Task<(IReadOnlyList<InvoiceListRow> Items, int TotalItems)> SearchAsync(
         long? customerId,
         DateTime? fromUtc,
         DateTime? toUtc,
@@ -194,8 +236,20 @@ public sealed class InvoiceReadRepository : IInvoiceReadRepository
 
         await using var reader = await connection.QueryMultipleAsync(
             $"""
-             SELECT {InvoiceColumns}
+             SELECT i.id               AS Id,
+                    i.invoice_number   AS InvoiceNumber,
+                    i.invoice_date_utc AS InvoiceDateUtc,
+                    i.customer_id      AS CustomerId,
+                    -- Joined, not invented: a walk-in comes back NULL and the screen words it.
+                    c.name             AS CustomerName,
+                    i.sale_type        AS SaleType,
+                    i.total            AS Total,
+                    i.amount_paid      AS AmountPaid,
+                    i.amount_remaining AS AmountRemaining,
+                    i.net_amount       AS NetAmount,
+                    i.payment_method   AS PaymentMethod
              FROM invoices i
+             LEFT JOIN customers c ON c.id = i.customer_id
              {filter}
              ORDER BY i.invoice_date_utc DESC, i.id DESC
              LIMIT @limit OFFSET @offset;
@@ -204,7 +258,7 @@ public sealed class InvoiceReadRepository : IInvoiceReadRepository
              """,
             new { customerId, fromUtc, toUtc, limit = pageSize, offset = (page - 1) * pageSize });
 
-        var items = (await reader.ReadAsync<Invoice>()).AsList();
+        var items = (await reader.ReadAsync<InvoiceListRow>()).AsList();
         var total = await reader.ReadSingleAsync<int>();
 
         return (items, total);
@@ -237,8 +291,17 @@ public sealed class InvoiceReadRepository : IInvoiceReadRepository
 
         public PaymentMethod PaymentMethod { get; init; }
 
+        public string? PaymentProofPath { get; init; }
+
+        public string? PaymentAccountNumber { get; init; }
+
+        public string? PaymentTransactionId { get; init; }
+
         public long UserId { get; init; }
 
+        // Hand-written, so every field added to Invoice must be added HERE too — a new column
+        // that reaches the SELECT but not this method is dropped in silence, which is exactly
+        // how payment_proof_path first came back null on a proof that was stored correctly.
         public Invoice ToInvoice() => new()
         {
             Id = Id,
@@ -252,6 +315,9 @@ public sealed class InvoiceReadRepository : IInvoiceReadRepository
             AmountRemaining = AmountRemaining,
             NetAmount = NetAmount,
             PaymentMethod = PaymentMethod,
+            PaymentProofPath = PaymentProofPath,
+            PaymentAccountNumber = PaymentAccountNumber,
+            PaymentTransactionId = PaymentTransactionId,
             UserId = UserId,
         };
     }

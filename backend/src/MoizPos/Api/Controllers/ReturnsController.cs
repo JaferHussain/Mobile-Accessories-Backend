@@ -2,8 +2,10 @@ using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MoizPos.Api.Authorization;
+using MoizPos.Application.Abstractions;
 using MoizPos.Application.Contracts.Common;
 using MoizPos.Application.Services;
+using MoizPos.Domain.Errors;
 
 namespace MoizPos.Api.Controllers;
 
@@ -75,8 +77,52 @@ public sealed class CreatePurchaseReturnValidator : AbstractValidator<CreatePurc
 public sealed class SaleReturnsController : ControllerBase
 {
     private readonly IReturnService _returns;
+    private readonly IReturnReadRepository _reads;
 
-    public SaleReturnsController(IReturnService returns) => _returns = returns;
+    public SaleReturnsController(IReturnService returns, IReturnReadRepository reads)
+    {
+        _returns = returns;
+        _reads = reads;
+    }
+
+    /// <summary>
+    /// "Return item": find a returnable sale by product name instead of an invoice number.
+    /// </summary>
+    [HttpGet("find")]
+    public async Task<IActionResult> Find(
+        [FromQuery] string search,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(search) || search.Trim().Length < 2)
+        {
+            throw new BusinessRuleViolationException("Type at least 2 letters to search.");
+        }
+
+        var rows = await _reads.FindReturnableLinesAsync(search, limit: 8, cancellationToken);
+
+        // Mapped, not returned raw: the counter is sent the money already worked out, so the
+        // screen and the return it records can never disagree.
+        var lines = rows.Select(ReturnableSaleLine.From).ToList();
+
+        return Ok(ApiResponse<IReadOnlyList<ReturnableSaleLine>>.Ok(lines));
+    }
+
+    /// <summary>Recent sale returns, one row per product — the general/detail list the Returns
+    /// screen shows so a return is not just "recorded and forgotten".</summary>
+    [HttpGet]
+    public async Task<IActionResult> Search(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25,
+        CancellationToken cancellationToken = default)
+    {
+        var (normalizedPage, normalizedSize) = PagedResult<SaleReturnRow>.Normalize(page, pageSize);
+
+        var (items, total) = await _reads.SearchSaleReturnsAsync(
+            normalizedPage, normalizedSize, cancellationToken);
+
+        return Ok(ApiResponse<PagedResult<SaleReturnRow>>.Ok(
+            new PagedResult<SaleReturnRow>(items, normalizedPage, normalizedSize, total)));
+    }
 
     [HttpPost]
     public async Task<IActionResult> Create(
@@ -109,8 +155,34 @@ public sealed class SaleReturnsController : ControllerBase
 public sealed class PurchaseReturnsController : ControllerBase
 {
     private readonly IReturnService _returns;
+    private readonly IReturnReadRepository _reads;
 
-    public PurchaseReturnsController(IReturnService returns) => _returns = returns;
+    public PurchaseReturnsController(IReturnService returns, IReturnReadRepository reads)
+    {
+        _returns = returns;
+        _reads = reads;
+    }
+
+    /// <summary>
+    /// Recent purchase returns, scoped to one supplier when given. Scoping is the everyday
+    /// case: a return goes back to whichever supplier the goods came from, and "everything
+    /// returned to everyone" is rarely what the owner is looking for.
+    /// </summary>
+    [HttpGet]
+    public async Task<IActionResult> Search(
+        [FromQuery] long? supplierId = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25,
+        CancellationToken cancellationToken = default)
+    {
+        var (normalizedPage, normalizedSize) = PagedResult<PurchaseReturnRow>.Normalize(page, pageSize);
+
+        var (items, total) = await _reads.SearchPurchaseReturnsAsync(
+            supplierId, normalizedPage, normalizedSize, cancellationToken);
+
+        return Ok(ApiResponse<PagedResult<PurchaseReturnRow>>.Ok(
+            new PagedResult<PurchaseReturnRow>(items, normalizedPage, normalizedSize, total)));
+    }
 
     [HttpPost]
     public async Task<IActionResult> Create(

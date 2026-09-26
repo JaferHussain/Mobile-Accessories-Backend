@@ -15,6 +15,7 @@ public sealed class ReturnWriteRepository : IReturnWriteRepository
         return await unitOfWork.Connection.QuerySingleOrDefaultAsync<InvoiceSnapshot>(
             """
             SELECT id AS Id, invoice_number AS InvoiceNumber, customer_id AS CustomerId,
+                   subtotal AS Subtotal, order_discount AS OrderDiscount,
                    total AS Total, amount_paid AS AmountPaid,
                    amount_remaining AS AmountRemaining, net_amount AS NetAmount
             FROM invoices
@@ -36,7 +37,7 @@ public sealed class ReturnWriteRepository : IReturnWriteRepository
             SELECT id AS Id, invoice_id AS InvoiceId, product_id AS ProductId,
                    product_name AS ProductName, quantity AS Quantity, returned_qty AS ReturnedQty,
                    unit_sale_price AS UnitSalePrice, unit_cost_price AS UnitCostPrice,
-                   line_discount AS LineDiscount
+                   line_discount AS LineDiscount, line_total AS LineTotal
             FROM invoice_items
             WHERE invoice_id = @invoiceId AND id IN @invoiceItemIds
             ORDER BY id
@@ -104,10 +105,10 @@ public sealed class ReturnWriteRepository : IReturnWriteRepository
             """
             INSERT INTO sale_return_items
                 (sale_return_id, invoice_item_id, product_id, quantity, unit_sale_price,
-                 unit_cost_price, line_total)
+                 unit_refund_price, unit_cost_price, discount_total, line_total)
             VALUES
                 (@saleReturnId, @InvoiceItemId, @ProductId, @Quantity, @UnitSalePrice,
-                 @UnitCostPrice, @LineTotal);
+                 @UnitRefundPrice, @UnitCostPrice, @DiscountTotal, @LineTotal);
             """,
             items.Select(item => new
             {
@@ -116,7 +117,9 @@ public sealed class ReturnWriteRepository : IReturnWriteRepository
                 item.ProductId,
                 item.Quantity,
                 item.UnitSalePrice,
+                item.UnitRefundPrice,
                 item.UnitCostPrice,
+                item.DiscountTotal,
                 item.LineTotal,
             }),
             unitOfWork.Transaction);

@@ -18,6 +18,19 @@ public sealed record SupplierUpsertRequest
     public string? ContactNumber { get; init; }
 
     public string? Address { get; init; }
+
+    /// <summary>Stored exactly as typed — see the validator for why it is not pattern-checked.</summary>
+    public string? Cnic { get; init; }
+
+    public string? Email { get; init; }
+
+    public string? BankName { get; init; }
+
+    public string? BankAccountTitle { get; init; }
+
+    public string? BankAccountNumber { get; init; }
+
+    public string? Notes { get; init; }
 }
 
 public sealed record SupplierPaymentRequest
@@ -44,6 +57,28 @@ public sealed class SupplierUpsertValidator : AbstractValidator<SupplierUpsertRe
 
         RuleFor(x => x.Address)
             .MaximumLength(255).WithMessage("Address cannot exceed 255 characters.");
+
+        // Length only, no format. A CNIC or an IBAN is transcribed from the supplier's own
+        // paperwork; refusing one because it is punctuated differently would make the software
+        // argue with the document it is copying. Length is checked because the column has one,
+        // and silently truncating would store something the owner never typed.
+        RuleFor(x => x.Cnic)
+            .MaximumLength(30).WithMessage("CNIC cannot exceed 30 characters.");
+
+        RuleFor(x => x.Email)
+            .MaximumLength(255).WithMessage("Email cannot exceed 255 characters.");
+
+        RuleFor(x => x.BankName)
+            .MaximumLength(150).WithMessage("Bank name cannot exceed 150 characters.");
+
+        RuleFor(x => x.BankAccountTitle)
+            .MaximumLength(150).WithMessage("Account title cannot exceed 150 characters.");
+
+        RuleFor(x => x.BankAccountNumber)
+            .MaximumLength(50).WithMessage("Account number cannot exceed 50 characters.");
+
+        RuleFor(x => x.Notes)
+            .MaximumLength(500).WithMessage("Notes cannot exceed 500 characters.");
     }
 }
 
@@ -114,6 +149,12 @@ public sealed class SuppliersController : ControllerBase
                 Name = request.Name.Trim(),
                 ContactNumber = request.ContactNumber?.Trim(),
                 Address = request.Address?.Trim(),
+                Cnic = request.Cnic?.Trim(),
+                Email = request.Email?.Trim(),
+                BankName = request.BankName?.Trim(),
+                BankAccountTitle = request.BankAccountTitle?.Trim(),
+                BankAccountNumber = request.BankAccountNumber?.Trim(),
+                Notes = request.Notes?.Trim(),
             },
             cancellationToken);
 
@@ -134,6 +175,12 @@ public sealed class SuppliersController : ControllerBase
         existing.Name = request.Name.Trim();
         existing.ContactNumber = request.ContactNumber?.Trim();
         existing.Address = request.Address?.Trim();
+        existing.Cnic = request.Cnic?.Trim();
+        existing.Email = request.Email?.Trim();
+        existing.BankName = request.BankName?.Trim();
+        existing.BankAccountTitle = request.BankAccountTitle?.Trim();
+        existing.BankAccountNumber = request.BankAccountNumber?.Trim();
+        existing.Notes = request.Notes?.Trim();
 
         // PayableBalance is untouched on purpose: it moves only through purchase, payment and
         // purchase-return transactions, never by editing contact details.

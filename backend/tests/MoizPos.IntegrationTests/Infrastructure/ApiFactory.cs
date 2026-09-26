@@ -18,6 +18,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     public string ConnectionString => _database.ConnectionString;
 
+    /// <summary>
+    /// Where the host writes product pictures during the suite. Its own temporary directory, so
+    /// a test run never scatters image files through the repository — and never deletes one a
+    /// developer put there by hand.
+    /// </summary>
+    public string ContentRoot { get; } =
+        Path.Combine(Path.GetTempPath(), $"moizpos-tests-{Guid.NewGuid():N}");
+
     public async Task InitializeAsync()
     {
         await _database.InitializeAsync();
@@ -31,11 +39,20 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     {
         await _database.DisposeAsync();
         await base.DisposeAsync();
+
+        if (Directory.Exists(ContentRoot))
+        {
+            Directory.Delete(ContentRoot, recursive: true);
+        }
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
+
+        // Product pictures are written relative to the content root, so the suite gets its own.
+        Directory.CreateDirectory(ContentRoot);
+        builder.UseContentRoot(ContentRoot);
 
         // UseSetting writes into host configuration, which the WebApplicationBuilder reads before
         // Program.cs resolves the connection string. ConfigureAppConfiguration alone is applied
@@ -49,6 +66,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             // That file is added after this one and would otherwise decide which database the
             // suite writes to — including a live server.
             ["SkipMachineLocalSettings"] = "true",
+            // The local MySQL is not strict; the shop's server is. Without this the suite runs
+            // under weaker rules than production and a coercion bug passes here to fail there.
+            ["Database:EnforceStrictSqlMode"] = "true",
             ["Jwt:Key"] = "integration-test-signing-key-at-least-32-chars",
             ["Jwt:Issuer"] = "MoizPos",
             ["Jwt:Audience"] = "MoizPosCounter",
@@ -114,6 +134,67 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
         return await connection.ExecuteScalarAsync<long>(
             "SELECT id FROM brands WHERE name = @name;", new { name });
+    }
+
+    /// <summary>
+    /// Prices and stocks a product directly, for tests whose subject is NOT the stocking flow.
+    ///
+    /// <para>A product now leaves the Products screen with no price and nothing on the shelf —
+    /// both arrive with its first purchase. A test about sharing a receipt or filtering a list
+    /// should not have to record a purchase and a supplier to get something sellable, so this
+    /// puts the product in the state a first delivery would leave it in.</para>
+    ///
+    /// <para>Safe as a direct write: the quantity invariant only checks products that have
+    /// stock movements, and any later sale writes a movement whose resulting quantity follows
+    /// from this one. The real rule is exercised in <c>Products/StockingFlowTests</c>.</para>
+    /// </summary>
+    public async Task StockProductAsync(
+        long productId,
+        int quantity = 10,
+        decimal costPrice = 800m,
+        decimal salePrice = 1100m,
+        decimal wholesalePrice = 0m)
+    {
+        await using var connection = await _database.OpenAsync();
+
+        await connection.ExecuteAsync(
+            """
+            UPDATE products
+            SET quantity_on_hand = @quantity,
+                cost_price = @costPrice,
+                retail_price = @salePrice,
+                wholesale_price = @wholesalePrice,
+                updated_at_utc = UTC_TIMESTAMP(6)
+            WHERE id = @productId;
+            """,
+            new { productId, quantity, costPrice, salePrice, wholesalePrice });
+    }
+
+    /// <summary>A supplier to buy from. Every purchase has to name one.</summary>
+    public async Task<long> EnsureSupplierAsync(string name = "Test Supplier")
+    {
+        await using var connection = await _database.OpenAsync();
+
+        await connection.ExecuteAsync(
+            """
+            INSERT IGNORE INTO suppliers (name, payable_balance, is_active, created_at_utc)
+            VALUES (@name, 0, TRUE, UTC_TIMESTAMP(6));
+            """,
+            new { name });
+
+        return await connection.ExecuteScalarAsync<long>(
+            "SELECT id FROM suppliers WHERE name = @name;", new { name });
+    }
+
+    /// <summary>
+    /// A category and a brand — everything a product needs to be filed. Most tests want exactly
+    /// this and do not care what either is called.
+    /// </summary>
+    public async Task<(long CategoryId, long BrandId)> EnsureCatalogueAsync(
+        string category = "Cables",
+        string brand = "Baseus")
+    {
+        return (await EnsureCategoryAsync(category), await EnsureBrandAsync(brand));
     }
 
     public Task<MySqlConnector.MySqlConnection> OpenDatabaseAsync() => _database.OpenAsync();

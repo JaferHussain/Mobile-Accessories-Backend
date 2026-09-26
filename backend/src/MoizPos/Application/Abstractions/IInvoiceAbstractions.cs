@@ -53,6 +53,8 @@ public interface IInvoiceWriteRepository
         decimal amountPaid,
         decimal amountRemaining,
         PaymentMethod paymentMethod,
+        string? paymentAccountNumber,
+        string? paymentTransactionId,
         string? idempotencyKey,
         long userId,
         DateTime nowUtc,
@@ -103,11 +105,54 @@ public interface IInvoiceWriteRepository
 /// <summary>An invoice with its lines, for display.</summary>
 public sealed record InvoiceWithItems(Invoice Invoice, IReadOnlyList<InvoiceItem> Items, string? CustomerName);
 
+/// <summary>
+/// One sale as the Invoices list shows it — enough to recognise a bill and hand it over, and no
+/// more. No cost, no profit: this list is reachable by Staff, because handing a customer their
+/// own receipt is counter work.
+/// </summary>
+public sealed record InvoiceListRow
+{
+    public long Id { get; init; }
+
+    public string InvoiceNumber { get; init; } = string.Empty;
+
+    public DateTime InvoiceDateUtc { get; init; }
+
+    /// <summary>Null for a walk-in — a sale that belongs to nobody.</summary>
+    public long? CustomerId { get; init; }
+
+    /// <summary>
+    /// Null for a walk-in, deliberately, rather than an invented "Walk-in customer" label.
+    /// "Nobody" is a fact; how to word it is the screen's choice, not the database's.
+    /// </summary>
+    public string? CustomerName { get; init; }
+
+    public SaleType SaleType { get; init; }
+
+    public decimal Total { get; init; }
+
+    public decimal AmountPaid { get; init; }
+
+    public decimal AmountRemaining { get; init; }
+
+    /// <summary>Total less the value of any sale returns — what the sale is worth today.</summary>
+    public decimal NetAmount { get; init; }
+
+    public PaymentMethod PaymentMethod { get; init; }
+}
+
 public interface IInvoiceReadRepository
 {
     Task<InvoiceWithItems?> FindByIdAsync(long id, CancellationToken cancellationToken = default);
 
-    Task<(IReadOnlyList<Invoice> Items, int TotalItems)> SearchAsync(
+    /// <summary>
+    /// Attaches (or replaces) the screenshot backing a non-cash payment. A single-row update
+    /// touching no money and no stock, so it needs none of the locking the sale itself does.
+    /// </summary>
+    Task SetPaymentProofPathAsync(
+        long id, string paymentProofPath, CancellationToken cancellationToken = default);
+
+    Task<(IReadOnlyList<InvoiceListRow> Items, int TotalItems)> SearchAsync(
         long? customerId,
         DateTime? fromUtc,
         DateTime? toUtc,
@@ -122,6 +167,7 @@ public interface ICustomerRepository
     Task<(IReadOnlyList<Customer> Items, int TotalItems)> SearchAsync(
         string? search,
         bool withBalanceOnly,
+        SaleType? saleType,
         int page,
         int pageSize,
         CancellationToken cancellationToken = default);

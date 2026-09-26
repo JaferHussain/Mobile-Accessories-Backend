@@ -20,6 +20,16 @@ public sealed record DashboardDto
 
     public decimal TotalPurchases { get; init; }
 
+    /// <summary>
+    /// Value returned by customers this period. Already netted into <see cref="TotalSales"/>
+    /// via <c>invoices.net_amount</c> — shown again on its own so the owner can see how much
+    /// came back, not just the smaller sales figure it produced.
+    /// </summary>
+    public decimal TotalSaleReturns { get; init; }
+
+    /// <summary>Value sent back to suppliers this period, already netted into <see cref="TotalPurchases"/>.</summary>
+    public decimal TotalPurchaseReturns { get; init; }
+
     public decimal GrossProfit { get; init; }
 
     public decimal TotalExpenses { get; init; }
@@ -29,6 +39,22 @@ public sealed record DashboardDto
     public decimal CashSales { get; init; }
 
     public decimal CreditSales { get; init; }
+
+    /// <summary>
+    /// How <see cref="CreditSales"/> was made up. These are VISIBILITY, not new money: every
+    /// rupee here is already inside <see cref="CreditSales"/> and <see cref="TotalReceivables"/>.
+    /// Adding them to either would count the same debt twice.
+    /// </summary>
+    public int UdhaarSalesCount { get; init; }
+
+    /// <summary>The value of sales taken wholly on credit — nothing was paid at the counter.</summary>
+    public decimal UdhaarSalesAmount { get; init; }
+
+    public int PartPaidSalesCount { get; init; }
+
+    /// <summary>Only the unpaid remainder of part-paid sales; what came in is already in
+    /// <see cref="CashSales"/>.</summary>
+    public decimal PartPaidRemaining { get; init; }
 
     public decimal TotalReceivables { get; init; }
 
@@ -100,6 +126,11 @@ public interface IReportingService
         CancellationToken cancellationToken = default);
 
     /// <summary>The retail/wholesale split for a date range (FR-014a).</summary>
+    /// <summary>Each salesman's totals for the period — who took the money, who gave the
+    /// discounts. Pairs with the day's drawer count, which asks whose shift was short.</summary>
+    Task<IReadOnlyList<UserSalesRow>> SalesByUserAsync(
+        DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<SaleTypeTotalsRow>> SalesByTypeAsync(
         DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
 
@@ -153,9 +184,12 @@ public sealed class ReportingService : IReportingService
 
         var totalSales = await _reports.TotalSalesAsync(range, cancellationToken);
         var totalPurchases = await _reports.TotalPurchasesAsync(range, cancellationToken);
+        var saleReturns = await _reports.TotalSaleReturnsAsync(range, cancellationToken);
+        var purchaseReturns = await _reports.TotalPurchaseReturnsAsync(range, cancellationToken);
         var grossProfit = await _reports.GrossProfitAsync(range, cancellationToken);
         var expenses = await _expenses.SumForPeriodAsync(range, cancellationToken);
         var (cashSales, creditSales) = await _reports.SalesBySettlementAsync(range, cancellationToken);
+        var credit = await _reports.CreditBreakdownAsync(range, cancellationToken);
         var itemsSold = await _reports.ItemsSoldAsync(range, cancellationToken);
         var receivables = await _reports.TotalReceivablesAsync(cancellationToken);
         var payables = await _reports.TotalPayablesAsync(cancellationToken);
@@ -169,11 +203,17 @@ public sealed class ReportingService : IReportingService
             ToUtc = range.EndUtc,
             TotalSales = totalSales,
             TotalPurchases = totalPurchases,
+            TotalSaleReturns = saleReturns,
+            TotalPurchaseReturns = purchaseReturns,
             GrossProfit = grossProfit,
             TotalExpenses = expenses,
             NetProfit = ProfitCalculator.NetProfit(grossProfit, expenses),
             CashSales = cashSales,
             CreditSales = creditSales,
+            UdhaarSalesCount = credit.UdhaarCount,
+            UdhaarSalesAmount = credit.UdhaarAmount,
+            PartPaidSalesCount = credit.PartPaidCount,
+            PartPaidRemaining = credit.PartPaidRemaining,
             TotalReceivables = receivables,
             TotalPayables = payables,
             ItemsSoldCount = itemsSold,
@@ -287,6 +327,12 @@ public sealed class ReportingService : IReportingService
 
         return new PagedResult<StockMovementReportRow>(items, normalizedPage, normalizedSize, total);
     }
+
+    public Task<IReadOnlyList<UserSalesRow>> SalesByUserAsync(
+        DateOnly from,
+        DateOnly to,
+        CancellationToken cancellationToken = default) =>
+        _reports.SalesByUserAsync(_periods.ResolveLocalDateRange(from, to), cancellationToken);
 
     public Task<IReadOnlyList<SaleTypeTotalsRow>> SalesByTypeAsync(
         DateOnly from,

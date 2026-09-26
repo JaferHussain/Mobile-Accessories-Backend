@@ -136,13 +136,16 @@ public sealed class ProductService : IProductService
             BrandId = request.BrandId,
             Model = Trim(request.Model),
             Barcode = Trim(request.Barcode),
-            CostPrice = request.CostPrice,
-            WholesalePrice = request.WholesalePrice,
-            RetailPrice = request.RetailPrice,
-            SalePrice = request.SalePrice,
-            QuantityOnHand = request.QuantityOnHand,
             MinStockThreshold = request.MinStockThreshold,
             SupplierId = request.SupplierId,
+
+            // A new product is an empty shelf label: nothing on hand and nothing priced. The
+            // first purchase supplies the cost, the two selling prices and the quantity, all in
+            // one transaction — so a product is never half-priced or priced-but-absent.
+            CostPrice = 0m,
+            WholesalePrice = 0m,
+            RetailPrice = 0m,
+            QuantityOnHand = 0,
         };
 
         return await _products.CreateAsync(product, cancellationToken);
@@ -167,14 +170,15 @@ public sealed class ProductService : IProductService
             BrandId = request.BrandId,
             Model = Trim(request.Model),
             Barcode = Trim(request.Barcode),
-            WholesalePrice = request.WholesalePrice,
-            RetailPrice = request.RetailPrice,
-            SalePrice = request.SalePrice,
             MinStockThreshold = request.MinStockThreshold,
             SupplierId = request.SupplierId,
 
-            // Carried through unchanged; the repository does not write them.
+            // Carried through unchanged. Editing a product changes what it IS, never what it is
+            // worth or how many there are: prices move through a purchase, stock through a
+            // purchase, sale, return or audited adjustment.
             CostPrice = existing.CostPrice,
+            WholesalePrice = existing.WholesalePrice,
+            RetailPrice = existing.RetailPrice,
             QuantityOnHand = existing.QuantityOnHand,
         };
 
@@ -245,9 +249,16 @@ public sealed class ProductService : IProductService
     /// Refuses a product pointed at a category or brand that does not exist, or one the owner has
     /// retired. The foreign key would catch the first case as a 500; this makes it a clear 404.
     /// </summary>
+    /// <summary>
+    /// Checks a product's filing: the category exists and is in use, and so does the brand.
+    ///
+    /// <para><b>The brand is required</b> — the owner's rule is that goods with no well-known
+    /// maker are filed under a brand created for them rather than left blank, so "no brand" is
+    /// not a state a product can be in.</para>
+    /// </summary>
     private async Task EnsureTaxonomyExistsAsync(
         long categoryId,
-        long? brandId,
+        long brandId,
         CancellationToken cancellationToken)
     {
         var category = await _categories.FindByIdAsync(categoryId, cancellationToken)
@@ -259,19 +270,15 @@ public sealed class ProductService : IProductService
                 $"The category '{category.Name}' is no longer in use. Choose an active category.");
         }
 
-        if (brandId is null)
-        {
-            return;
-        }
-
-        var brand = await _brands.FindByIdAsync(brandId.Value, cancellationToken)
-            ?? throw new NotFoundException("Brand", brandId.Value);
+        var brand = await _brands.FindByIdAsync(brandId, cancellationToken)
+            ?? throw new NotFoundException("Brand", brandId);
 
         if (!brand.IsActive)
         {
             throw new BusinessRuleViolationException(
                 $"The brand '{brand.Name}' is no longer in use. Choose an active brand.");
         }
+
     }
 
     private async Task EnsureBarcodeIsFreeAsync(

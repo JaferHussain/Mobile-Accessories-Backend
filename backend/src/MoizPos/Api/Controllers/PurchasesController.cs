@@ -22,10 +22,16 @@ public sealed record CreatePurchaseRequest
     public DateTime? PurchaseDate { get; init; }
 
     /// <summary>
-    /// Optional new sale price. Once set it applies to all remaining stock of this product,
-    /// including units bought earlier at a lower cost (FR-011d).
+    /// What a walk-in pays. Required the first time a product is stocked — that is the delivery
+    /// that makes it sellable. Optional afterwards: omit it and the current price stands.
+    ///
+    /// <para>Once set it applies to all remaining stock, including units bought earlier at a
+    /// lower cost (FR-011d).</para>
     /// </summary>
-    public decimal? NewSalePrice { get; init; }
+    public decimal? NewRetailPrice { get; init; }
+
+    /// <summary>What a bulk buyer pays. Optional; a wholesale sale falls back to the retail price.</summary>
+    public decimal? NewWholesalePrice { get; init; }
 }
 
 public sealed class CreatePurchaseValidator : AbstractValidator<CreatePurchaseRequest>
@@ -41,9 +47,16 @@ public sealed class CreatePurchaseValidator : AbstractValidator<CreatePurchaseRe
         RuleFor(x => x.Quantity)
             .GreaterThan(0).WithMessage("Quantity must be greater than zero.");
 
-        RuleFor(x => x.NewSalePrice)
-            .GreaterThanOrEqualTo(0).When(x => x.NewSalePrice.HasValue)
-            .WithMessage("Sale price cannot be negative.");
+        // Only the shape is checked here. WHETHER a price is required depends on the product's
+        // current state, which the validator cannot see — that rule lives in the service, which
+        // reads it under the row lock.
+        RuleFor(x => x.NewRetailPrice)
+            .GreaterThanOrEqualTo(0).When(x => x.NewRetailPrice.HasValue)
+            .WithMessage("Retail price cannot be negative.");
+
+        RuleFor(x => x.NewWholesalePrice)
+            .GreaterThanOrEqualTo(0).When(x => x.NewWholesalePrice.HasValue)
+            .WithMessage("Wholesale price cannot be negative.");
     }
 }
 
@@ -70,6 +83,7 @@ public sealed class PurchasesController : ControllerBase
         [FromQuery] long? supplierId,
         [FromQuery] DateTime? from,
         [FromQuery] DateTime? to,
+        [FromQuery] string? productSearch = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25,
         CancellationToken cancellationToken = default)
@@ -78,7 +92,7 @@ public sealed class PurchasesController : ControllerBase
             PagedResult<Purchase>.Normalize(page, pageSize);
 
         var (items, total) = await _purchaseRepository.SearchAsync(
-            supplierId, from, to, normalizedPage, normalizedSize, cancellationToken);
+            supplierId, from, to, productSearch, normalizedPage, normalizedSize, cancellationToken);
 
         return Ok(ApiResponse<PagedResult<Purchase>>.Ok(
             new PagedResult<Purchase>(
@@ -103,7 +117,8 @@ public sealed class PurchasesController : ControllerBase
                 UnitCost = request.UnitCost,
                 Quantity = request.Quantity,
                 PurchaseDateUtc = request.PurchaseDate,
-                NewSalePrice = request.NewSalePrice,
+                NewRetailPrice = request.NewRetailPrice,
+                NewWholesalePrice = request.NewWholesalePrice,
             },
             CurrentUser.Id(User),
             cancellationToken);

@@ -111,38 +111,4 @@ public static class WhatsAppLinkBuilder
         return CountryCode + national;
     }
 
-    /// <summary>The message body for an invoice.</summary>
-    public static string InvoiceMessage(
-        ShopDetails shop, string invoiceNumber, decimal total, decimal remaining)
-    {
-        var builder = new StringBuilder();
-
-        builder.Append(CultureInfo.InvariantCulture, $"{shop.Name}, {shop.Location}");
-        builder.Append(CultureInfo.InvariantCulture, $"\nInvoice {invoiceNumber}");
-        builder.Append(CultureInfo.InvariantCulture, $"\nTotal: Rs {total:N2}");
-
-        if (remaining > 0m)
-        {
-            builder.Append(CultureInfo.InvariantCulture, $"\nBalance: Rs {remaining:N2}");
-        }
-
-        builder.Append("\n\nYour receipt:");
-
-        return builder.ToString();
-    }
-
-    /// <summary>The message body for a payment receipt.</summary>
-    public static string ReceiptMessage(
-        ShopDetails shop, string receiptNumber, decimal amount, decimal balance)
-    {
-        var builder = new StringBuilder();
-
-        builder.Append(CultureInfo.InvariantCulture, $"{shop.Name}, {shop.Location}");
-        builder.Append(CultureInfo.InvariantCulture, $"\nReceipt {receiptNumber}");
-        builder.Append(CultureInfo.InvariantCulture, $"\nReceived: Rs {amount:N2}");
-        builder.Append(CultureInfo.InvariantCulture, $"\nBalance: Rs {balance:N2}");
-        builder.Append("\n\nYour receipt:");
-
-        return builder.ToString();
-    }
 }

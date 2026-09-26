@@ -2,9 +2,12 @@ using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using MoizPos.Api.Authorization;
+using MoizPos.Application.Abstractions;
 using MoizPos.Application.Contracts.Common;
 using MoizPos.Application.Services;
 using MoizPos.Domain.Enums;
+using MoizPos.Domain.Errors;
 
 namespace MoizPos.Api.Controllers;
 
@@ -13,12 +16,28 @@ public sealed record ShareLinkRequest
     public DocumentType DocumentType { get; init; }
 
     public long ReferenceId { get; init; }
+
+    /// <summary>
+    /// A number typed at the counter for a WALK-IN — a sale with no customer, which is most
+    /// counter sales. Optional, used only when the document has no number on file, and never
+    /// stored (FR-123, FR-124).
+    /// </summary>
+    public string? MobileNumber { get; init; }
 }
 
 public sealed class ShareLinkValidator : AbstractValidator<ShareLinkRequest>
 {
-    public ShareLinkValidator() =>
+    public ShareLinkValidator()
+    {
         RuleFor(x => x.ReferenceId).GreaterThan(0).WithMessage("A document is required.");
+
+        // Bounded so nonsense is a 400 with a message rather than something the link builder has
+        // to make sense of. Whether the number is USABLE is the builder's call — it knows what a
+        // Pakistani mobile number looks like, and an unusable one is not an error but a link that
+        // simply is not offered.
+        RuleFor(x => x.MobileNumber)
+            .MaximumLength(20).WithMessage("That mobile number is too long.");
+    }
 }
 
 /// <summary>
@@ -63,9 +82,40 @@ public sealed class DocumentsController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _documents.CreateShareLinkAsync(
-            request.DocumentType, request.ReferenceId, CurrentUser.Id(User), cancellationToken);
+            request.DocumentType, request.ReferenceId, CurrentUser.Id(User),
+            request.MobileNumber, cancellationToken);
 
         return StatusCode(StatusCodes.Status201Created, ApiResponse<ShareLinkResult>.Ok(result));
+    }
+
+    /// <summary>
+    /// The links outstanding for one document.
+    ///
+    /// <para>Admin only: revoking is containment over something already released, which matches
+    /// the owner's authority over corrective actions. Sharing itself stays open to Staff — a
+    /// salesman handing a customer their own bill is counter work.</para>
+    /// </summary>
+    [HttpGet("documents/share-links")]
+    [Authorize(Policy = Policies.AdminOnly)]
+    public async Task<IActionResult> ShareLinks(
+        [FromQuery] DocumentType documentType,
+        [FromQuery] long referenceId,
+        CancellationToken cancellationToken)
+    {
+        var links = await _documents.ListShareLinksAsync(documentType, referenceId, cancellationToken);
+
+        return Ok(ApiResponse<IReadOnlyList<ShareLinkSummary>>.Ok(links));
+    }
+
+    /// <summary>Withdraws one link before it expires. Idempotent.</summary>
+    [HttpPost("documents/share-links/{id:long}/revoke")]
+    [Authorize(Policy = Policies.AdminOnly)]
+    public async Task<IActionResult> RevokeShareLink(long id, CancellationToken cancellationToken)
+    {
+        var revoked = await _documents.RevokeShareLinkAsync(id, cancellationToken)
+            ?? throw new NotFoundException("Share link", id);
+
+        return Ok(ApiResponse<ShareLinkSummary>.Ok(revoked));
     }
 }
 

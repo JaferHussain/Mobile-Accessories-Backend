@@ -60,10 +60,10 @@ public sealed class ReturnTests
             """
             -- Products carry a category foreign key now, so the category has to exist first.
             INSERT IGNORE INTO categories (name, created_at_utc) VALUES ('Cables', UTC_TIMESTAMP(6));
+            INSERT IGNORE INTO brands (name, is_local, is_active, created_at_utc) VALUES ('TestBrand', FALSE, TRUE, UTC_TIMESTAMP(6));
             INSERT INTO products
-                (name, category_id, cost_price, wholesale_price, retail_price, sale_price,
-                 quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
-            VALUES (@name, (SELECT id FROM categories WHERE name = 'Cables'), @cost, 0, 0, @salePrice, @quantity, 3, TRUE, UTC_TIMESTAMP(6));
+                (name, category_id, brand_id, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
+            VALUES (@name, (SELECT id FROM categories WHERE name = 'Cables'), (SELECT id FROM brands WHERE name = 'TestBrand'), @cost, 0, @salePrice, @quantity, 3, TRUE, UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
             new { name = $"Cable {Guid.NewGuid():N}"[..20], cost, salePrice, quantity });
@@ -269,6 +269,181 @@ public sealed class ReturnTests
     }
 
     // ================================================================
+    //  A DISCOUNTED sale — the order discount is spread across the lines
+    // ================================================================
+
+    private async Task<CreateInvoiceResult> SellDiscountedAsync(
+        long productId, int quantity, decimal price, decimal orderDiscount,
+        decimal paid, long? customerId, long userId) =>
+        await Sales().CreateAsync(
+            new CreateInvoiceRequest
+            {
+                CustomerId = customerId,
+                AmountPaid = paid,
+                OrderDiscount = orderDiscount,
+                PaymentMethod = paid == 0 ? PaymentMethod.Credit
+                    : paid < price * quantity - orderDiscount ? PaymentMethod.Partial : PaymentMethod.Cash,
+                Items = [new CreateInvoiceLine { ProductId = productId, Quantity = quantity, UnitSalePrice = price }],
+            }, userId, UserRole.Admin);
+
+    [Fact]
+    public async Task A_return_refunds_what_the_customer_paid_after_the_order_discount()
+    {
+        var (userId, _, _) = await _api.CreateUserAsync(UserRole.Staff);
+        var productId = await CreateProductAsync(10, 400m, 600m);
+
+        // The exact case from the counter: one charger at 600, discounted by 10 -> paid 590.
+        var sale = await SellDiscountedAsync(productId, 1, 600m, 10m, paid: 590m, null, userId);
+
+        var result = await Returns().RecordSaleReturnAsync(
+            new RecordSaleReturnRequest
+            {
+                InvoiceId = sale.InvoiceId,
+                Items = [new SaleReturnLine { InvoiceItemId = await FirstInvoiceItemAsync(sale.InvoiceId), Quantity = 1 }],
+            },
+            userId);
+
+        result.TotalReturned.Should().Be(590m, "the customer paid 590, not the undiscounted 600");
+        result.RefundDue.Should().Be(590m);
+        (await QuantityAsync(productId)).Should().Be(10, "the unit goes back on the shelf");
+    }
+
+    [Fact]
+    public async Task Returning_every_unit_of_a_discounted_sale_settles_the_invoice_exactly()
+    {
+        var (userId, _, _) = await _api.CreateUserAsync(UserRole.Staff);
+        var customerId = await CreateCustomerAsync();
+        var productId = await CreateProductAsync(10, 400m, 500m);
+
+        // 4 x 500 = 2,000 less a 200 discount -> 1,800 owed.
+        var sale = await SellDiscountedAsync(productId, 4, 500m, 200m, paid: 0m, customerId, userId);
+        (await BalanceAsync(customerId)).Should().Be(1800m);
+
+        var itemId = await FirstInvoiceItemAsync(sale.InvoiceId);
+        var returns = Returns();
+
+        // Half back now: 2 units at the effective 450.
+        var first = await returns.RecordSaleReturnAsync(
+            new RecordSaleReturnRequest
+            { InvoiceId = sale.InvoiceId, Items = [new SaleReturnLine { InvoiceItemId = itemId, Quantity = 2 }] },
+            userId);
+
+        first.TotalReturned.Should().Be(900m);
+
+        var second = await returns.RecordSaleReturnAsync(
+            new RecordSaleReturnRequest
+            { InvoiceId = sale.InvoiceId, Items = [new SaleReturnLine { InvoiceItemId = itemId, Quantity = 2 }] },
+            userId);
+
+        second.TotalReturned.Should().Be(900m);
+
+        // Nothing owed, nothing refunded, everything back on the shelf — and the invoice is
+        // worth zero, not minus the discount.
+        (await BalanceAsync(customerId)).Should().Be(0m);
+        second.RefundDue.Should().Be(0m);
+        (await QuantityAsync(productId)).Should().Be(10);
+
+        await using var connection = await _api.OpenDatabaseAsync();
+
+        var net = await connection.ExecuteScalarAsync<decimal>(
+            "SELECT net_amount FROM invoices WHERE id = @id;", new { id = sale.InvoiceId });
+
+        net.Should().Be(0m);
+    }
+
+    /// <summary>
+    /// The owner's own example: a 600 charger sold for 575 after a 25 discount. The customer is
+    /// handed 575 — and the 25 is RECORDED and reported, because the shopkeeper explains it at
+    /// the counter and the owner must be able to see it months later.
+    /// </summary>
+    [Fact]
+    public async Task A_return_records_the_discount_it_adjusted_for()
+    {
+        var (userId, _, _) = await _api.CreateUserAsync(UserRole.Staff);
+        var productId = await CreateProductAsync(10, 300m, 600m);
+
+        var sale = await SellDiscountedAsync(productId, 1, 600m, 25m, paid: 575m, null, userId);
+
+        var result = await Returns().RecordSaleReturnAsync(
+            new RecordSaleReturnRequest
+            {
+                InvoiceId = sale.InvoiceId,
+                Items = [new SaleReturnLine { InvoiceItemId = await FirstInvoiceItemAsync(sale.InvoiceId), Quantity = 1 }],
+            },
+            userId);
+
+        result.TotalBilled.Should().Be(600m, "what the item was listed at");
+        result.TotalDiscount.Should().Be(25m, "the adjustment the customer is told about");
+        result.TotalReturned.Should().Be(575m, "what the customer actually paid, and gets back");
+        result.RefundDue.Should().Be(575m);
+
+        await using var connection = await _api.OpenDatabaseAsync();
+
+        var row = await connection.QuerySingleAsync<(decimal Billed, decimal Refund, decimal Discount, decimal Total)>(
+            """
+            SELECT unit_sale_price, unit_refund_price, discount_total, line_total
+            FROM sale_return_items ORDER BY id DESC LIMIT 1;
+            """);
+
+        // All three figures are on the record, so nothing has to be re-derived from the invoice.
+        row.Billed.Should().Be(600m);
+        row.Refund.Should().Be(575m);
+        row.Discount.Should().Be(25m);
+        row.Total.Should().Be(575m);
+    }
+
+    [Fact]
+    public async Task An_undiscounted_return_records_no_adjustment()
+    {
+        var (userId, _, _) = await _api.CreateUserAsync(UserRole.Staff);
+        var productId = await CreateProductAsync(10, 800m, 1100m);
+
+        var sale = await SellAsync(productId, 1, 1100m, paid: 1100m, null, userId);
+
+        var result = await Returns().RecordSaleReturnAsync(
+            new RecordSaleReturnRequest
+            {
+                InvoiceId = sale.InvoiceId,
+                Items = [new SaleReturnLine { InvoiceItemId = await FirstInvoiceItemAsync(sale.InvoiceId), Quantity = 1 }],
+            },
+            userId);
+
+        result.TotalBilled.Should().Be(1100m);
+        result.TotalDiscount.Should().Be(0m, "nothing was adjusted, so nothing is claimed");
+        result.TotalReturned.Should().Be(1100m);
+    }
+
+    [Fact]
+    public async Task A_discounted_return_records_the_effective_unit_price()
+    {
+        var (userId, _, _) = await _api.CreateUserAsync(UserRole.Staff);
+        var productId = await CreateProductAsync(10, 400m, 500m);
+
+        var sale = await SellDiscountedAsync(productId, 2, 500m, 100m, paid: 900m, null, userId);
+
+        await Returns().RecordSaleReturnAsync(
+            new RecordSaleReturnRequest
+            {
+                InvoiceId = sale.InvoiceId,
+                Items = [new SaleReturnLine { InvoiceItemId = await FirstInvoiceItemAsync(sale.InvoiceId), Quantity = 1 }],
+            },
+            userId);
+
+        await using var connection = await _api.OpenDatabaseAsync();
+
+        var row = await connection.QuerySingleAsync<(decimal Billed, decimal Refund, decimal Total)>(
+            """
+            SELECT unit_sale_price, unit_refund_price, line_total
+            FROM sale_return_items ORDER BY id DESC LIMIT 1;
+            """);
+
+        // 1,000 discounted to 900 -> billed 500 a unit, worth 450 back.
+        row.Billed.Should().Be(500m);
+        row.Refund.Should().Be(450m);
+        row.Total.Should().Be(450m);
+    }
+
+    // ================================================================
     //  Reversal uses the RECORDED values — research.md R11
     // ================================================================
 
@@ -287,7 +462,7 @@ public sealed class ReturnTests
             new RecordPurchaseRequest
             {
                 SupplierId = supplierId, ProductId = productId,
-                UnitCost = 850m, Quantity = 10, NewSalePrice = 1200m,
+                UnitCost = 850m, Quantity = 10, NewRetailPrice = 1200m,
             },
             userId);
 
@@ -462,7 +637,7 @@ public sealed class ReturnTests
 
         var purchase = await Purchases().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 50 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 50, NewRetailPrice = 1100m },
             userId);
 
         var result = await Returns().RecordPurchaseReturnAsync(
@@ -485,13 +660,13 @@ public sealed class ReturnTests
 
         var first = await purchases.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         // The product's cost is now 850, but the first purchase must unwind at 800.
         await purchases.RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 850m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 850m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         var result = await Returns().RecordPurchaseReturnAsync(
@@ -510,7 +685,7 @@ public sealed class ReturnTests
 
         var purchase = await Purchases().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 850m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 850m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await Returns().RecordPurchaseReturnAsync(
@@ -536,7 +711,7 @@ public sealed class ReturnTests
 
         var purchase = await Purchases().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         var act = async () => await Returns().RecordPurchaseReturnAsync(
@@ -556,7 +731,7 @@ public sealed class ReturnTests
 
         var purchase = await Purchases().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         // Sell 8 of the 10, then try to send all 10 back to the supplier.
@@ -579,7 +754,7 @@ public sealed class ReturnTests
 
         var purchase = await Purchases().RecordPurchaseAsync(
             new RecordPurchaseRequest
-            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10 },
+            { SupplierId = supplierId, ProductId = productId, UnitCost = 800m, Quantity = 10, NewRetailPrice = 1100m },
             userId);
 
         await Returns().RecordPurchaseReturnAsync(

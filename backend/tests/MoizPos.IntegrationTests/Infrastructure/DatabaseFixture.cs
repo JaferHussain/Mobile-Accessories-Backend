@@ -64,10 +64,26 @@ public sealed class DatabaseFixture : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     /// <summary>Opens a plain connection for arrange/assert steps outside the code under test.</summary>
+    /// <summary>
+    /// A connection for a test to seed or inspect with.
+    ///
+    /// <para><b>Strict, like the shop's server.</b> The live database runs
+    /// <c>STRICT_TRANS_TABLES</c> globally, so every connection there refuses a truncated string
+    /// or a NOT NULL column left out of an INSERT. The local MySQL does not, so without this a
+    /// test could seed data the real server would have rejected — and the suite would be proving
+    /// behaviour that cannot happen in the shop.</para>
+    /// </summary>
     public async Task<MySqlConnection> OpenAsync()
     {
         var connection = new MySqlConnection(ConnectionString);
         await connection.OpenAsync();
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SET SESSION sql_mode = CONCAT(@@sql_mode, ',STRICT_ALL_TABLES')";
+            await command.ExecuteNonQueryAsync();
+        }
+
         return connection;
     }
 

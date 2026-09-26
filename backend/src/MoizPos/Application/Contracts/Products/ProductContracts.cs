@@ -76,26 +76,29 @@ public sealed record ProductUpsertRequest
     /// <summary>Chosen from the Categories module. Free text is no longer accepted.</summary>
     public long CategoryId { get; init; }
 
-    /// <summary>Chosen from the Brands module, or omitted for unbranded stock.</summary>
-    public long? BrandId { get; init; }
+    /// <summary>
+    /// Chosen from the Brands module. <b>Required</b> since 0027 — goods with no well-known maker
+    /// are filed under the shop's own general "Local" brand rather than left unbranded, which is
+    /// what lets the form ask for the brand first and offer only that brand's categories.
+    /// </summary>
+    public long BrandId { get; init; }
 
     public string? Model { get; init; }
 
     public string? Barcode { get; init; }
 
-    public decimal CostPrice { get; init; }
-
-    public decimal WholesalePrice { get; init; }
-
-    public decimal RetailPrice { get; init; }
-
-    public decimal SalePrice { get; init; }
-
-    public int QuantityOnHand { get; init; }
-
     public int MinStockThreshold { get; init; }
 
     public long? SupplierId { get; init; }
+
+    // NO PRICES AND NO QUANTITY, deliberately.
+    //
+    // A product is a catalogue entry — what the thing IS. What it costs, what it sells for and
+    // how many are on the shelf all arrive with the first delivery, through a purchase, and are
+    // the purchase's to set. Accepting them here would give the shop two ways to price an item
+    // and two ways to set its stock, and the two would disagree the first time anyone used the
+    // wrong one. A product therefore starts at zero stock and no price, and is unsellable until
+    // it has been stocked.
 }
 
 public sealed record AdjustStockRequest
@@ -140,30 +143,16 @@ public sealed class ProductUpsertValidator : AbstractValidator<ProductUpsertRequ
         RuleFor(x => x.CategoryId)
             .GreaterThan(0).WithMessage("A category must be selected.");
 
+        // That the brand exists, is in use, and carries the chosen category is the service's
+        // call — it can look all three up. This only catches an absent or nonsense id.
         RuleFor(x => x.BrandId)
-            .GreaterThan(0).When(x => x.BrandId.HasValue)
-            .WithMessage("The selected brand is not valid.");
+            .GreaterThan(0).WithMessage("A brand must be selected.");
 
         RuleFor(x => x.Model)
             .MaximumLength(80).WithMessage("Model cannot exceed 80 characters.");
 
         RuleFor(x => x.Barcode)
             .MaximumLength(64).WithMessage("Barcode cannot exceed 64 characters.");
-
-        RuleFor(x => x.CostPrice)
-            .GreaterThanOrEqualTo(0).WithMessage("Cost price cannot be negative.");
-
-        RuleFor(x => x.WholesalePrice)
-            .GreaterThanOrEqualTo(0).WithMessage("Wholesale price cannot be negative.");
-
-        RuleFor(x => x.RetailPrice)
-            .GreaterThanOrEqualTo(0).WithMessage("Retail price cannot be negative.");
-
-        RuleFor(x => x.SalePrice)
-            .GreaterThanOrEqualTo(0).WithMessage("Sale price cannot be negative.");
-
-        RuleFor(x => x.QuantityOnHand)
-            .GreaterThanOrEqualTo(0).WithMessage("Quantity cannot be negative.");
 
         RuleFor(x => x.MinStockThreshold)
             .GreaterThanOrEqualTo(0).WithMessage("Minimum stock threshold cannot be negative.");

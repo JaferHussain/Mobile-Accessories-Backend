@@ -60,10 +60,10 @@ public sealed class OpeningBalanceTests
         return await connection.ExecuteScalarAsync<long>(
             """
             INSERT IGNORE INTO categories (name, created_at_utc) VALUES ('Cables', UTC_TIMESTAMP(6));
+            INSERT IGNORE INTO brands (name, is_local, is_active, created_at_utc) VALUES ('TestBrand', FALSE, TRUE, UTC_TIMESTAMP(6));
             INSERT INTO products
-                (name, category_id, cost_price, wholesale_price, retail_price, sale_price,
-                 quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
-            VALUES (@name, (SELECT id FROM categories WHERE name = 'Cables'), 800, 0, 0,
+                (name, category_id, brand_id, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
+            VALUES (@name, (SELECT id FROM categories WHERE name = 'Cables'), (SELECT id FROM brands WHERE name = 'TestBrand'), 800, 0,
                     @salePrice, @quantity, 3, TRUE, UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,

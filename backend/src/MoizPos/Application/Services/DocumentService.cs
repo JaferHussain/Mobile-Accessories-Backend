@@ -8,9 +8,14 @@ using MoizPos.Domain.Errors;
 
 namespace MoizPos.Application.Services;
 
+/// <param name="WhatsAppUrl">Null when there is no usable number, same as <paramref name="SmsUrl"/>.</param>
+/// <param name="SmsUrl">The same link through the device's own SMS app. Both are deep links —
+/// nothing is sent by the server, so the shop needs no messaging account and pays nothing per
+/// message.</param>
 public sealed record ShareLinkResult(
     string ShareUrl,
     string? WhatsAppUrl,
+    string? SmsUrl,
     DateTime ExpiresAtUtc);
 
 public sealed record ResolvedDocument(DocumentType DocumentType, long ReferenceId);
@@ -21,12 +26,30 @@ public interface IDocumentService
 
     Task<byte[]> RenderReceiptAsync(long paymentId, CancellationToken cancellationToken = default);
 
+    /// <param name="suppliedMobileNumber">
+    /// A number typed at the counter for a WALK-IN — a sale with no customer, which is most
+    /// counter sales. Used only when the document has no number on file, and never stored.
+    /// </param>
     Task<ShareLinkResult> CreateShareLinkAsync(
         DocumentType documentType, long referenceId, long userId,
+        string? suppliedMobileNumber = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>Resolves a raw token to its document, or null for unknown/expired/revoked.</summary>
     Task<ResolvedDocument?> ResolveTokenAsync(string token, CancellationToken cancellationToken = default);
+
+    /// <summary>What is outstanding for one document. Revoking what you cannot see is not an
+    /// action anyone can take, so the listing exists for the revoke to be usable.</summary>
+    Task<IReadOnlyList<ShareLinkSummary>> ListShareLinksAsync(
+        DocumentType documentType, long referenceId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Withdraws one link. Idempotent: revoking an already-revoked link returns the ORIGINAL
+    /// revocation time untouched, because that timestamp is evidence of when the withdrawal
+    /// actually happened. Null when no such link exists.
+    /// </summary>
+    Task<ShareLinkSummary?> RevokeShareLinkAsync(
+        long shareLinkId, CancellationToken cancellationToken = default);
 }
 
 public sealed class DocumentOptions
@@ -123,6 +146,7 @@ public sealed class DocumentService : IDocumentService
         DocumentType documentType,
         long referenceId,
         long userId,
+        string? suppliedMobileNumber = null,
         CancellationToken cancellationToken = default)
     {
         var nowUtc = _clock.UtcNow;
@@ -143,11 +167,19 @@ public sealed class DocumentService : IDocumentService
             Hash(token), documentType, referenceId, expiresAt, userId, nowUtc, cancellationToken);
 
         var shareUrl = $"{_options.PublicBaseUrl.TrimEnd('/')}/api/public/documents/{token}";
-        var whatsApp = WhatsAppLinkBuilder.Build(mobileNumber, message, shareUrl);
+
+        // A number on file wins. It is the shop's own record of where a bill was sent, and a
+        // number typed at the counter must never silently redirect a known customer's bill
+        // (FR-124). The supplied one is for a walk-in, who has no record to read (FR-123) — and
+        // it is used here and nowhere else: nothing is written back.
+        var sendTo = string.IsNullOrWhiteSpace(mobileNumber) ? suppliedMobileNumber : mobileNumber;
+
+        var whatsApp = WhatsAppLinkBuilder.Build(sendTo, message, shareUrl);
+        var sms = SmsLinkBuilder.Build(sendTo, message, shareUrl);
 
         // A missing or unusable number is not an error: the document still has a link the
-        // shopkeeper can copy. The UI disables the WhatsApp button and says why (FR-044).
-        return new ShareLinkResult(shareUrl, whatsApp?.Url, expiresAt);
+        // shopkeeper can copy. The UI disables both send buttons and says why (FR-044, FR-121).
+        return new ShareLinkResult(shareUrl, whatsApp?.Url, sms, expiresAt);
     }
 
     public async Task<ResolvedDocument?> ResolveTokenAsync(
@@ -186,9 +218,10 @@ public sealed class DocumentService : IDocumentService
 
         return (
             customer?.MobileNumber,
-            WhatsAppLinkBuilder.InvoiceMessage(
+            DocumentMessages.Invoice(
                 _options.Shop,
                 invoice.Invoice.InvoiceNumber,
+                customer?.Name,
                 invoice.Invoice.Total,
                 invoice.Invoice.AmountRemaining));
     }
@@ -202,10 +235,40 @@ public sealed class DocumentService : IDocumentService
         var customer = await _customers.FindByIdAsync(payment.CustomerId, cancellationToken)
             ?? throw new NotFoundException("Customer", payment.CustomerId);
 
+        // The balance AT THIS PAYMENT, from the ledger entry it wrote — not the customer's
+        // balance today, which has already moved on if they have bought again since.
+        var balanceAfter = await _payments.BalanceAfterPaymentAsync(paymentId, cancellationToken)
+                           ?? customer.OutstandingBalance;
+
         return (
             customer.MobileNumber,
-            WhatsAppLinkBuilder.ReceiptMessage(
-                _options.Shop, payment.ReceiptNumber, payment.Amount, customer.OutstandingBalance));
+            DocumentMessages.PaymentReceipt(
+                _options.Shop, payment.ReceiptNumber, customer.Name, payment.Amount, balanceAfter));
+    }
+
+    public Task<IReadOnlyList<ShareLinkSummary>> ListShareLinksAsync(
+        DocumentType documentType,
+        long referenceId,
+        CancellationToken cancellationToken = default) =>
+        _tokens.ListForDocumentAsync(documentType, referenceId, _clock.UtcNow, cancellationToken);
+
+    public async Task<ShareLinkSummary?> RevokeShareLinkAsync(
+        long shareLinkId,
+        CancellationToken cancellationToken = default)
+    {
+        var nowUtc = _clock.UtcNow;
+        var existing = await _tokens.FindByIdAsync(shareLinkId, nowUtc, cancellationToken);
+
+        if (existing is null)
+        {
+            return null;
+        }
+
+        // RevokeAsync only writes where revoked_at_utc IS NULL, so a second call cannot move the
+        // original timestamp. Re-read rather than assume, so what is returned is what is stored.
+        await _tokens.RevokeAsync(shareLinkId, nowUtc, cancellationToken);
+
+        return await _tokens.FindByIdAsync(shareLinkId, nowUtc, cancellationToken);
     }
 
     private static string Hash(string token) =>
@@ -225,4 +288,16 @@ public interface ICustomerPaymentReadRepository
 {
     Task<Domain.Entities.CustomerPayment?> FindByIdAsync(
         long id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The balance recorded on the ledger entry for this payment — what the customer owed once it
+    /// was applied.
+    ///
+    /// <para>Deliberately NOT the customer's balance today. The two part company the moment the
+    /// customer buys again, and a receipt that restates itself afterwards contradicts the shop's
+    /// own register. Null when no ledger entry references this payment, which should not happen
+    /// and is treated as "cannot say" rather than "zero".</para>
+    /// </summary>
+    Task<decimal?> BalanceAfterPaymentAsync(
+        long paymentId, CancellationToken cancellationToken = default);
 }

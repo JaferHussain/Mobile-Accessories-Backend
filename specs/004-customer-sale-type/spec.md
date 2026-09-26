@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-18
 
-**Status**: Draft
+**Status**: Resolved — implementing
 
 **Input**: User description: "move retail vs wholesale from reports and add these in customer module, main purpose is that, admin will easily find the customer sale type, add a dropdown with next of search bar, add 2 button one for retail and one for wholesale so admin will click on anyone and find exactly customer and easily manage the account"
 
@@ -129,12 +129,10 @@ reachable, and clicking a total still lists that day's sales with customer and s
 
 #### What a customer's sale type means
 
-- **FR-101**: A customer's sale type is
-  [NEEDS CLARIFICATION: How is a customer's sale type decided? (a) the owner marks each customer as
-  Retail or Wholesale when adding or editing them, defaulting to Retail — a standing label the owner
-  controls; (b) it is worked out from that customer's actual sales — a customer with any wholesale
-  sale counts as wholesale; (c) the owner marks it, and the screen also shows what their sales
-  actually say so a mismatch is visible.]
+- **FR-101**: A customer's sale type is a standing label the owner sets when adding or editing
+  the customer, defaulting to Retail. It is not derived from their invoices — a customer's sales
+  can include the occasional exception (a wholesale party buying one item at the counter) without
+  that reclassifying them.
 - **FR-102**: A customer who has both retail and wholesale sales MUST be handled without
   misrepresenting them, in a way consistent with FR-101.
 - **FR-103**: Changing a customer's sale type MUST NOT alter their balance, ledger, opening balance
@@ -151,13 +149,9 @@ reachable, and clicking a total still lists that day's sales with customer and s
 
 - **FR-106**: The day's takings split into retail and wholesale, and the drill-down listing that
   day's sales, MUST remain available after this feature ships.
-- **FR-107**: Where that day-end split lives is
-  [NEEDS CLARIFICATION: The owner asked to "move retail vs wholesale from Reports". The Reports
-  entry answers "how much money did the shop take today, split by type" and drills into the day's
-  sales — a different question from "which customers are wholesale". Options: (a) keep it in Reports
-  unchanged and only add the new customer filtering; (b) remove it from Reports, accepting that the
-  day's takings can no longer be split by type; (c) keep the figures but move them onto the
-  Dashboard, leaving Reports for the detailed lists.]
+- **FR-107**: The day-end split stays in Reports, unchanged. It answers "how much money did the
+  shop take today, split by type" — a different question from "which customers are wholesale" —
+  and this feature only adds the new customer filtering alongside it.
 
 ### Key Entities
 

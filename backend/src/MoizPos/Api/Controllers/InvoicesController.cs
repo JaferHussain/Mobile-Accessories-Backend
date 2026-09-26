@@ -7,6 +7,7 @@ using MoizPos.Application.Services;
 using MoizPos.Domain.Entities;
 using MoizPos.Domain.Enums;
 using MoizPos.Domain.Errors;
+using MoizPos.Infrastructure.Storage;
 
 namespace MoizPos.Api.Controllers;
 
@@ -39,6 +40,12 @@ public sealed record CreateInvoiceApiRequest
     public decimal AmountPaid { get; init; }
 
     public PaymentMethod PaymentMethod { get; init; } = PaymentMethod.Cash;
+
+    /// <summary>The customer's account, where a non-cash payment came from. Optional (0021).</summary>
+    public string? PaymentAccountNumber { get; init; }
+
+    /// <summary>Their reference for that transfer. Optional.</summary>
+    public string? PaymentTransactionId { get; init; }
 
     /// <summary>Counter sale or bulk sale. Retail unless the salesman says otherwise.</summary>
     public SaleType SaleType { get; init; } = SaleType.Retail;
@@ -76,6 +83,16 @@ public sealed class CreateInvoiceValidator : AbstractValidator<CreateInvoiceApiR
         RuleFor(x => x.NewCustomer!.Name)
             .NotEmpty().When(x => x.NewCustomer is not null)
             .WithMessage("A customer name is required.");
+
+        // Bounded to the column, so an over-long reference is a 400 with a message rather than
+        // a truncation or a database error at the counter. Whether a reference is ALLOWED at
+        // all depends on the payment method, which InvoiceService decides — a validator that
+        // knew that rule would be a second place to keep it in step.
+        RuleFor(x => x.PaymentAccountNumber)
+            .MaximumLength(50).WithMessage("The account number is too long.");
+
+        RuleFor(x => x.PaymentTransactionId)
+            .MaximumLength(64).WithMessage("The transaction reference is too long.");
     }
 }
 
@@ -120,6 +137,8 @@ public sealed class InvoicesController : ControllerBase
                     OrderDiscount = request.OrderDiscount,
                     AmountPaid = request.AmountPaid,
                     PaymentMethod = request.PaymentMethod,
+                    PaymentAccountNumber = request.PaymentAccountNumber,
+                    PaymentTransactionId = request.PaymentTransactionId,
                     SaleType = request.SaleType,
                     IdempotencyKey = idempotencyKey,
                     Items = request.Items.Select(i => new CreateInvoiceLine
@@ -163,6 +182,55 @@ public sealed class InvoicesController : ControllerBase
         return Ok(ApiResponse<InvoiceWithItems>.Ok(invoice));
     }
 
+    /// <summary>
+    /// Attaches a screenshot backing a non-cash payment (FR-001).
+    ///
+    /// <para>A second call, after the sale exists, on purpose: the invoice id it is addressed to
+    /// does not exist until the sale has been saved, and the sale must never wait on a picture
+    /// (FR-002). Any signed-in user may attach one — the salesman is who takes the payment
+    /// (FR-007).</para>
+    /// </summary>
+    [HttpPost("{id:long}/payment-proof")]
+    [RequestSizeLimit(4 * 1024 * 1024)]
+    public async Task<IActionResult> UploadPaymentProof(
+        long id,
+        IFormFile file,
+        [FromServices] IImageStorageService images,
+        CancellationToken cancellationToken)
+    {
+        var invoice = await _reads.FindByIdAsync(id, cancellationToken)
+            ?? throw new NotFoundException("Invoice", id);
+
+        // Cash is its own proof — the money is in the drawer. Accepting a picture here would
+        // be evidence of nothing, and would invite "proof" on sales that never had a transfer.
+        if (invoice.Invoice.PaymentMethod == PaymentMethod.Cash)
+        {
+            throw new BusinessRuleViolationException(
+                "A Cash sale needs no payment proof — the money was taken at the counter.");
+        }
+
+        if (file is null || file.Length == 0)
+        {
+            throw new BusinessRuleViolationException("No payment proof was uploaded.");
+        }
+
+        await using var stream = file.OpenReadStream();
+
+        var relativePath = await images.SavePaymentProofAsync(
+            stream, file.ContentType, file.Length, cancellationToken);
+
+        await _reads.SetPaymentProofPathAsync(id, relativePath, cancellationToken);
+
+        // Only once the new one is safely stored and recorded: a correction that deleted first
+        // and then failed would leave the invoice with no proof at all.
+        if (!string.IsNullOrWhiteSpace(invoice.Invoice.PaymentProofPath))
+        {
+            images.DeletePaymentProof(invoice.Invoice.PaymentProofPath);
+        }
+
+        return Ok(ApiResponse<object>.Ok(new { invoiceId = id, paymentProofPath = relativePath }));
+    }
+
     [HttpGet]
     public async Task<IActionResult> Search(
         [FromQuery] long? customerId,
@@ -172,12 +240,12 @@ public sealed class InvoicesController : ControllerBase
         [FromQuery] int pageSize = 25,
         CancellationToken cancellationToken = default)
     {
-        var (normalizedPage, normalizedSize) = PagedResult<Invoice>.Normalize(page, pageSize);
+        var (normalizedPage, normalizedSize) = PagedResult<InvoiceListRow>.Normalize(page, pageSize);
 
         var (items, total) = await _reads.SearchAsync(
             customerId, from, to, normalizedPage, normalizedSize, cancellationToken);
 
-        return Ok(ApiResponse<PagedResult<Invoice>>.Ok(
-            new PagedResult<Invoice>(items, normalizedPage, normalizedSize, total)));
+        return Ok(ApiResponse<PagedResult<InvoiceListRow>>.Ok(
+            new PagedResult<InvoiceListRow>(items, normalizedPage, normalizedSize, total)));
     }
 }

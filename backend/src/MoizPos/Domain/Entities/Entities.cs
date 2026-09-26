@@ -31,6 +31,20 @@ public sealed class Supplier
 
     public string? Address { get; set; }
 
+    /// <summary>Stored exactly as entered — the supplier's own paperwork sets the format.</summary>
+    public string? Cnic { get; set; }
+
+    public string? Email { get; set; }
+
+    // Read together when paying an invoice, which is why they are named and grouped as a set.
+    public string? BankName { get; set; }
+
+    public string? BankAccountTitle { get; set; }
+
+    public string? BankAccountNumber { get; set; }
+
+    public string? Notes { get; set; }
+
     /// <summary>Running total of what the shop owes. Maintained only inside transactions.</summary>
     public decimal PayableBalance { get; set; }
 
@@ -105,8 +119,6 @@ public sealed class Product
 
     public decimal RetailPrice { get; set; }
 
-    /// <summary>The default price at the counter. Old stock sells at the current price (FR-011d).</summary>
-    public decimal SalePrice { get; set; }
 
     public int QuantityOnHand { get; set; }
 
@@ -151,6 +163,13 @@ public sealed class Customer
 
     public string? Address { get; set; }
 
+    /// <summary>
+    /// A standing label the owner sets (FR-101, feature 004), defaulting to Retail. Never
+    /// derived from invoices: a wholesale party's occasional counter purchase must not
+    /// reclassify them, and a customer with no sales yet must not have a type invented.
+    /// </summary>
+    public SaleType SaleType { get; set; } = SaleType.Retail;
+
     /// <summary>Always equals the latest ledger entry's BalanceAfter (invariant 2).</summary>
     public decimal OutstandingBalance { get; set; }
 
@@ -193,6 +212,22 @@ public sealed class Invoice
     public decimal NetAmount { get; set; }
 
     public PaymentMethod PaymentMethod { get; set; }
+
+    /// <summary>
+    /// A screenshot backing a non-cash payment (feature 008). Null is ordinary and permanent:
+    /// the picture is optional, and cash sales never have one.
+    /// </summary>
+    public string? PaymentProofPath { get; set; }
+
+    /// <summary>
+    /// The CUSTOMER's account — where a non-cash payment came from (migration 0021). Optional
+    /// and permanently nullable: the counter must not wait while somebody hunts for it. A cash
+    /// sale never has one, because money in the drawer came from no account.
+    /// </summary>
+    public string? PaymentAccountNumber { get; set; }
+
+    /// <summary>Their reference for that transfer. Same rules as the account number.</summary>
+    public string? PaymentTransactionId { get; set; }
 
     public long UserId { get; set; }
 }
@@ -281,6 +316,10 @@ public sealed class Purchase
 
     public long ProductId { get; set; }
 
+    /// <summary>Joined for display — "Return item" and the Purchases screen both need the
+    /// exact product name, not just its id.</summary>
+    public string ProductName { get; set; } = string.Empty;
+
     public DateTime PurchaseDateUtc { get; set; }
 
     public decimal UnitCost { get; set; }
@@ -302,6 +341,12 @@ public sealed class Expense
     public long CategoryId { get; set; }
 
     public decimal Amount { get; set; }
+
+    /// <summary>
+    /// Where the money came from. Nullable only because rows predating migration 0022 have no
+    /// answer recorded; every new expense must state one, and the drawer counts only Till.
+    /// </summary>
+    public PaymentSource? PaymentSource { get; set; }
 
     public DateTime ExpenseDateUtc { get; set; }
 

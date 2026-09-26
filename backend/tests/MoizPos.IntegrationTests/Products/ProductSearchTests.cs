@@ -27,7 +27,7 @@ public sealed class ProductSearchTests
 
     private sealed record Envelope<T>(bool Success, T? Data);
 
-    private sealed record Catalogue(string Tag, long TypeC, long OppoCharger, long SamsungCharger, long Unbranded);
+    private sealed record Catalogue(string Tag, long TypeC, long OppoCharger, long SamsungCharger, long GenericCable);
 
     private async Task<HttpClient> ClientAsync(UserRole role)
     {
@@ -49,32 +49,45 @@ public sealed class ProductSearchTests
     /// </summary>
     private async Task<Catalogue> SeedAsync()
     {
-        var tag = "zq" + new string(Guid.NewGuid().ToString("N").Where(char.IsLetter).Take(6).ToArray());
+        // Letters only, so the tag survives search normalisation as one searchable word — but
+        // NOT by filtering a GUID for letters: hex letters are a-f, which is a six-symbol
+        // alphabet. At six characters that is ~46k tags, and since the seeded barcode is unique
+        // and these rows accumulate, seeds began colliding and failing a random test with
+        // "Duplicate entry for key 'products.uq_products_barcode'". Mapping every hex digit onto
+        // its own letter keeps it letters-only while restoring the full 16 symbols.
+        var tag = "zq" + new string(
+            Guid.NewGuid().ToString("N").Take(10).Select(HexToLetter).ToArray());
 
         var cables = await _api.EnsureCategoryAsync("Cables");
         var chargers = await _api.EnsureCategoryAsync("Chargers");
         var baseus = await _api.EnsureBrandAsync("Baseus");
         var oppo = await _api.EnsureBrandAsync("Oppo");
         var samsung = await _api.EnsureBrandAsync("Samsung");
+        var local = await _api.EnsureBrandAsync("Local");
 
         return new Catalogue(
             tag,
             TypeC: await InsertAsync($"Type-C Braided Cable {tag}", cables, baseus, barcode: $"TC{tag}"),
             OppoCharger: await InsertAsync($"Charger 20W Fast {tag}", chargers, oppo),
             SamsungCharger: await InsertAsync($"Charger 18W {tag}", chargers, samsung),
-            Unbranded: await InsertAsync($"Micro USB Cable {tag}", cables, brandId: null));
+            // Goods with no well-known maker are filed under the shop's general "Local" brand
+            // since 0027 — there is no such thing as a product with no brand any more.
+            GenericCable: await InsertAsync($"Micro USB Cable {tag}", cables, local));
     }
 
-    private async Task<long> InsertAsync(string name, long categoryId, long? brandId, string? barcode = null)
+    /// <summary>'0'-'9' become 'g'-'p'; 'a'-'f' are already letters and pass through.</summary>
+    private static char HexToLetter(char hex) =>
+        char.IsDigit(hex) ? (char)('g' + (hex - '0')) : hex;
+
+    private async Task<long> InsertAsync(string name, long categoryId, long brandId, string? barcode = null)
     {
         await using var connection = await _api.OpenDatabaseAsync();
 
         return await connection.ExecuteScalarAsync<long>(
             """
             INSERT INTO products
-                (name, category_id, brand_id, barcode, cost_price, wholesale_price, retail_price,
-                 sale_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
-            VALUES (@name, @categoryId, @brandId, @barcode, 800, 0, 0, 1100, 10, 3, TRUE,
+                (name, category_id, brand_id, barcode, cost_price, wholesale_price, retail_price, quantity_on_hand, min_stock_threshold, is_active, created_at_utc)
+            VALUES (@name, @categoryId, @brandId, @barcode, 800, 0, 1100, 10, 3, TRUE,
                     UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
@@ -218,14 +231,14 @@ public sealed class ProductSearchTests
     }
 
     [Fact]
-    public async Task A_product_with_no_brand_is_still_found_by_name_and_category()
+    public async Task A_generic_product_is_still_found_by_name_and_category()
     {
         var admin = await ClientAsync(UserRole.Admin);
         var catalogue = await SeedAsync();
 
-        // Its missing brand simply cannot be the detail that matches; the others still can.
-        (await IdsAsync(admin, $"micro usb {catalogue.Tag}")).Should().Contain(catalogue.Unbranded);
-        (await IdsAsync(admin, $"cable {catalogue.Tag}")).Should().Contain(catalogue.Unbranded);
+        // Its brand ("Local") is not the detail that matches here; name and category still are.
+        (await IdsAsync(admin, $"micro usb {catalogue.Tag}")).Should().Contain(catalogue.GenericCable);
+        (await IdsAsync(admin, $"cable {catalogue.Tag}")).Should().Contain(catalogue.GenericCable);
     }
 
     [Fact]

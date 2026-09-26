@@ -83,6 +83,61 @@ public sealed class ReportRepository : IReportRepository
             new { startUtc = range.StartUtc, endUtc = range.EndUtc });
     }
 
+    public async Task<decimal> TotalSaleReturnsAsync(
+        DateRangeUtc range,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
+
+        return await connection.ExecuteScalarAsync<decimal>(
+            """
+            SELECT COALESCE(SUM(total_amount), 0) FROM sale_returns
+            WHERE return_date_utc >= @startUtc AND return_date_utc < @endUtc;
+            """,
+            new { startUtc = range.StartUtc, endUtc = range.EndUtc });
+    }
+
+    public async Task<decimal> TotalPurchaseReturnsAsync(
+        DateRangeUtc range,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
+
+        return await connection.ExecuteScalarAsync<decimal>(
+            """
+            SELECT COALESCE(SUM(total), 0) FROM purchase_returns
+            WHERE return_date_utc >= @startUtc AND return_date_utc < @endUtc;
+            """,
+            new { startUtc = range.StartUtc, endUtc = range.EndUtc });
+    }
+
+    public async Task<CreditBreakdown> CreditBreakdownAsync(
+        DateRangeUtc range,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
+
+        // Split by what was actually settled, not by payment_method: a sale labelled "Cash"
+        // whose payment fell short is still credit, and the label is the one part a caller
+        // controls. The two halves are mutually exclusive by construction (amount_paid = 0
+        // versus amount_paid > 0), so nothing is counted twice, and together they sum to the
+        // period's CreditSales — which is the point: they explain that figure.
+        return await connection.QuerySingleAsync<CreditBreakdown>(
+            """
+            SELECT
+                COALESCE(SUM(amount_paid = 0), 0)                                  AS UdhaarCount,
+                COALESCE(SUM(CASE WHEN amount_paid = 0
+                                  THEN amount_remaining ELSE 0 END), 0)            AS UdhaarAmount,
+                COALESCE(SUM(amount_paid > 0), 0)                                  AS PartPaidCount,
+                COALESCE(SUM(CASE WHEN amount_paid > 0
+                                  THEN amount_remaining ELSE 0 END), 0)            AS PartPaidRemaining
+            FROM invoices
+            WHERE invoice_date_utc >= @startUtc AND invoice_date_utc < @endUtc
+              AND amount_remaining > 0;
+            """,
+            new { startUtc = range.StartUtc, endUtc = range.EndUtc });
+    }
+
     public async Task<(decimal CashSales, decimal CreditSales)> SalesBySettlementAsync(
         DateRangeUtc range,
         CancellationToken cancellationToken = default)
@@ -101,6 +156,48 @@ public sealed class ReportRepository : IReportRepository
             new { startUtc = range.StartUtc, endUtc = range.EndUtc });
 
         return row;
+    }
+
+    /// <summary>
+    /// Each salesman's period. No cost, no profit: this answers "who took the money and who gave
+    /// the discounts", which is what pairs with a short drawer.
+    /// </summary>
+    private const string SalesByUserSql = """
+        SELECT
+            u.id        AS UserId,
+            u.full_name AS UserName,
+            COUNT(i.id) AS InvoiceCount,
+            -- Net of returns, so it agrees with every other sales total in the system.
+            COALESCE(SUM(i.net_amount), 0)       AS TotalSales,
+            COALESCE(SUM(i.amount_paid), 0)      AS CashTaken,
+            COALESCE(SUM(i.amount_remaining), 0) AS CreditGiven,
+            -- Both kinds. Line discounts are already inside the subtotal, so the whole-bill
+            -- figure on its own would understate what was actually given away.
+            COALESCE(SUM(i.order_discount), 0) + COALESCE(SUM(d.line_discounts), 0)
+                AS DiscountGiven
+        FROM invoices i
+        JOIN users u ON u.id = i.user_id
+        LEFT JOIN (
+            SELECT invoice_id, SUM(line_discount) AS line_discounts
+            FROM invoice_items
+            GROUP BY invoice_id
+        ) d ON d.invoice_id = i.id
+        WHERE i.invoice_date_utc >= @startUtc AND i.invoice_date_utc < @endUtc
+        GROUP BY u.id, u.full_name
+        ORDER BY TotalSales DESC;
+        """;
+
+    public async Task<IReadOnlyList<UserSalesRow>> SalesByUserAsync(
+        DateRangeUtc range,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenAsync(cancellationToken);
+
+        var rows = await connection.QueryAsync<UserSalesRow>(
+            SalesByUserSql,
+            new { startUtc = range.StartUtc, endUtc = range.EndUtc });
+
+        return rows.AsList();
     }
 
     public async Task<IReadOnlyList<SaleTypeTotalsRow>> SalesBySaleTypeAsync(

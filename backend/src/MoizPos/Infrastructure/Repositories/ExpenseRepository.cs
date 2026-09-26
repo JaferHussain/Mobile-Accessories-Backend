@@ -1,6 +1,7 @@
 using Dapper;
 using MoizPos.Application.Abstractions;
 using MoizPos.Application.Time;
+using MoizPos.Domain.Enums;
 
 namespace MoizPos.Infrastructure.Repositories;
 
@@ -71,6 +72,7 @@ public sealed class ExpenseRepository : IExpenseRepository
                     c.name             AS CategoryName,
                     e.amount           AS Amount,
                     e.expense_date_utc AS ExpenseDateUtc,
+                    e.payment_source   AS PaymentSource,
                     e.note             AS Note
              FROM expenses e
              JOIN expense_categories c ON c.id = e.category_id
@@ -99,6 +101,7 @@ public sealed class ExpenseRepository : IExpenseRepository
         long categoryId,
         decimal amount,
         DateTime expenseDateUtc,
+        PaymentSource paymentSource,
         string? note,
         long userId,
         CancellationToken cancellationToken = default)
@@ -107,11 +110,24 @@ public sealed class ExpenseRepository : IExpenseRepository
 
         return await connection.ExecuteScalarAsync<long>(
             """
-            INSERT INTO expenses (category_id, amount, expense_date_utc, note, user_id, created_at_utc)
-            VALUES (@categoryId, @amount, @expenseDateUtc, @note, @userId, UTC_TIMESTAMP(6));
+            INSERT INTO expenses
+                (category_id, amount, payment_source, expense_date_utc, note, user_id, created_at_utc)
+            VALUES (@categoryId, @amount, @paymentSource, @expenseDateUtc, @note, @userId,
+                    UTC_TIMESTAMP(6));
             SELECT LAST_INSERT_ID();
             """,
-            new { categoryId, amount, expenseDateUtc, note, userId });
+            // Spelled out, like every other enum column in this schema: no enum type handler is
+            // registered, so passing the value straight through writes its underlying int and the
+            // ENUM column rejects it.
+            new
+            {
+                categoryId,
+                amount,
+                paymentSource = paymentSource.ToString(),
+                expenseDateUtc,
+                note,
+                userId,
+            });
     }
 
     public async Task DeleteAsync(long id, CancellationToken cancellationToken = default)

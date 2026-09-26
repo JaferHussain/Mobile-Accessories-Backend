@@ -6,6 +6,7 @@ using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using MoizPos.Api.Authorization;
 using MoizPos.Migrator;
@@ -86,7 +87,13 @@ DapperConfig.Apply();
 builder.Services.AddSingleton(jwtOptions);
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<PeriodResolver>();
-builder.Services.AddSingleton<IDbConnectionFactory>(_ => new MySqlConnectionFactory(connectionString));
+// The shop's server already runs STRICT_TRANS_TABLES, so this stays off there: re-asserting it
+// would cost a round trip per connection for nothing. The test host turns it on, because the
+// local MySQL is not strict and tests must not run under weaker rules than production.
+var enforceStrictSqlMode = builder.Configuration.GetValue<bool>("Database:EnforceStrictSqlMode");
+
+builder.Services.AddSingleton<IDbConnectionFactory>(
+    _ => new MySqlConnectionFactory(connectionString, enforceStrictSqlMode));
 builder.Services.AddSingleton<IUnitOfWorkFactory, UnitOfWorkFactory>();
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<ITokenService, JwtTokenService>();
@@ -98,6 +105,7 @@ builder.Services.AddSingleton<IStockWriteRepository, StockWriteRepository>();
 builder.Services.AddSingleton<IInvoiceWriteRepository, InvoiceWriteRepository>();
 builder.Services.AddSingleton<ICustomerPaymentWriteRepository, CustomerPaymentWriteRepository>();
 builder.Services.AddSingleton<IReturnWriteRepository, ReturnWriteRepository>();
+builder.Services.AddSingleton<IReturnReadRepository, ReturnReadRepository>();
 
 builder.Services.AddSingleton<IPdfRenderer, PdfRenderer>();
 builder.Services.AddSingleton<IPdfRendererPort, PdfRendererAdapter>();
@@ -124,6 +132,13 @@ var backupOptions = new BackupOptions
     RunAtLocalHour = int.TryParse(builder.Configuration["Backup:RunAtLocalHour"], out var hour) ? hour : 2,
     // Empty means the MySQL client tools are already on PATH, which is the server case.
     ToolsDirectory = builder.Configuration["Backup:ToolsDirectory"] ?? string.Empty,
+
+    // Product pictures ride along with each dump (FR-017). The database stores only their
+    // paths, so a database-only backup restores a catalogue with every photograph missing.
+    // Resolved against the content root here, the same way ImageStorageService resolves it.
+    ProductImageDirectory = Path.Combine(
+        builder.Environment.ContentRootPath,
+        builder.Configuration["Storage:ProductImageRoot"] ?? "content/products"),
 };
 
 builder.Services.AddSingleton(backupOptions);
@@ -172,6 +187,10 @@ builder.Services.AddScoped<IReturnService, ReturnService>();
 builder.Services.AddScoped<IExpenseRepository, ExpenseRepository>();
 builder.Services.AddScoped<IReportRepository, ReportRepository>();
 builder.Services.AddScoped<IReportingService, ReportingService>();
+
+// Counting the drawer — the only control over physical cash.
+builder.Services.AddScoped<IDayClosingRepository, DayClosingRepository>();
+builder.Services.AddScoped<IDayClosingService, DayClosingService>();
 builder.Services.AddScoped<IAuditRepository, AuditRepository>();
 builder.Services.AddScoped<IDocumentTokenRepository, DocumentTokenRepository>();
 builder.Services.AddScoped<ICustomerPaymentReadRepository, CustomerPaymentReadRepository>();
@@ -307,6 +326,22 @@ if (counterAppIsBundled)
     app.UseDefaultFiles();
     app.UseStaticFiles();
 }
+
+// Product pictures (feature 005) live on disk under Storage:ProductImageRoot — not inside
+// wwwroot, so the block above never serves them. Registered unconditionally, not gated on
+// counterAppIsBundled like the block above: a picture must be reachable in every environment,
+// including development, where the counter app itself is served by Vite and this backend
+// bundles no wwwroot at all. Missing this meant every upload succeeded but every <img> for it
+// 404'd, silently falling back to the placeholder no matter how many products were photographed.
+var productImageRoot = (builder.Configuration["Storage:ProductImageRoot"] ?? "content/products")
+    .Replace('\\', '/').Trim('/');
+var productImageDirectory = Path.Combine(app.Environment.ContentRootPath, productImageRoot);
+Directory.CreateDirectory(productImageDirectory);
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(productImageDirectory),
+    RequestPath = $"/{productImageRoot}",
+});
 
 app.UseCors(CounterCorsPolicy);
 app.UseRateLimiter();

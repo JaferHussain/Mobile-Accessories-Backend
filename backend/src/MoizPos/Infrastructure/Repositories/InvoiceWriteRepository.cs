@@ -21,7 +21,8 @@ public sealed class InvoiceWriteRepository : IInvoiceWriteRepository
                    name AS Name,
                    quantity_on_hand AS QuantityOnHand,
                    cost_price AS CostPrice,
-                   sale_price AS SalePrice
+                   retail_price AS RetailPrice,
+                   wholesale_price AS WholesalePrice
             FROM products
             WHERE id IN @productIds
             ORDER BY id
@@ -61,6 +62,8 @@ public sealed class InvoiceWriteRepository : IInvoiceWriteRepository
         decimal amountPaid,
         decimal amountRemaining,
         PaymentMethod paymentMethod,
+        string? paymentAccountNumber,
+        string? paymentTransactionId,
         string? idempotencyKey,
         long userId,
         DateTime nowUtc,
@@ -70,11 +73,13 @@ public sealed class InvoiceWriteRepository : IInvoiceWriteRepository
             """
             INSERT INTO invoices
                 (invoice_number, customer_id, invoice_date_utc, sale_type, subtotal, order_discount, total,
-                 amount_paid, amount_remaining, net_amount, payment_method, idempotency_key,
+                 amount_paid, amount_remaining, net_amount, payment_method,
+                 payment_account_number, payment_transaction_id, idempotency_key,
                  user_id, created_at_utc)
             VALUES
                 (@invoiceNumber, @customerId, @invoiceDateUtc, @saleType, @subtotal, @orderDiscount, @total,
-                 @amountPaid, @amountRemaining, @total, @paymentMethod, @idempotencyKey,
+                 @amountPaid, @amountRemaining, @total, @paymentMethod,
+                 @paymentAccountNumber, @paymentTransactionId, @idempotencyKey,
                  @userId, @nowUtc);
             SELECT LAST_INSERT_ID();
             """,
@@ -91,6 +96,8 @@ public sealed class InvoiceWriteRepository : IInvoiceWriteRepository
                 amountPaid,
                 amountRemaining,
                 paymentMethod = paymentMethod.ToString(),
+                paymentAccountNumber,
+                paymentTransactionId,
                 idempotencyKey,
                 userId,
                 nowUtc,

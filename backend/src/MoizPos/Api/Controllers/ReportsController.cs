@@ -59,6 +59,21 @@ public sealed class ReportsController : ControllerBase
     /// The period's takings split into retail and wholesale (FR-014a) — the day-end figure the
     /// owner reads to see how much of the day was counter trade and how much was bulk.
     /// </summary>
+    /// <summary>
+    /// Each salesman's totals for the period. No cost and no profit — this answers "who took the
+    /// money and who gave the discounts", which is what a short drawer needs alongside it.
+    /// </summary>
+    [HttpGet("sales-by-user")]
+    public async Task<IActionResult> SalesByUser(
+        [FromQuery] DateOnly from,
+        [FromQuery] DateOnly to,
+        CancellationToken cancellationToken = default)
+    {
+        var rows = await _reporting.SalesByUserAsync(from, to, cancellationToken);
+
+        return Ok(ApiResponse<IReadOnlyList<UserSalesRow>>.Ok(rows));
+    }
+
     [HttpGet("sales-by-type")]
     public async Task<IActionResult> SalesByType(
         [FromQuery] DateOnly from,
